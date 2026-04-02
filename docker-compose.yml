@@ -1,0 +1,114 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       carbonledger
+      POSTGRES_USER:     carbonledger
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carbonledger"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL:      postgresql://carbonledger:${POSTGRES_PASSWORD:-changeme}@postgres:5432/carbonledger
+      JWT_SECRET:        ${JWT_SECRET}
+      JWT_EXPIRY:        7d
+      STELLAR_NETWORK:   ${STELLAR_NETWORK:-testnet}
+      STELLAR_RPC_URL:   ${STELLAR_RPC_URL:-https://soroban-testnet.stellar.org}
+      FRONTEND_URL:      http://localhost:3000
+      PORT:              3001
+    ports:
+      - "3001:3001"
+    command: >
+      sh -c "npx prisma migrate deploy && node dist/main"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NEXT_PUBLIC_API_URL:              http://localhost:3001/api/v1
+      NEXT_PUBLIC_STELLAR_NETWORK:      ${STELLAR_NETWORK:-testnet}
+      NEXT_PUBLIC_HORIZON_URL:          ${STELLAR_HORIZON_URL:-https://horizon-testnet.stellar.org}
+      NEXT_PUBLIC_SOROBAN_RPC_URL:      ${STELLAR_RPC_URL:-https://soroban-testnet.stellar.org}
+      NEXT_PUBLIC_REGISTRY_CONTRACT:    ${CARBON_REGISTRY_CONTRACT_ID}
+      NEXT_PUBLIC_CREDIT_CONTRACT:      ${CARBON_CREDIT_CONTRACT_ID}
+      NEXT_PUBLIC_MARKETPLACE_CONTRACT: ${CARBON_MARKETPLACE_CONTRACT_ID}
+      NEXT_PUBLIC_ORACLE_CONTRACT:      ${CARBON_ORACLE_CONTRACT_ID}
+      NEXT_PUBLIC_USDC_CONTRACT:        ${USDC_CONTRACT_ID}
+    ports:
+      - "3000:3000"
+
+  oracle_verification:
+    build:
+      context: ./oracle
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      ORACLE_SECRET_KEY:           ${ORACLE_SECRET_KEY}
+      CARBON_ORACLE_CONTRACT_ID:   ${CARBON_ORACLE_CONTRACT_ID}
+      CARBON_REGISTRY_CONTRACT_ID: ${CARBON_REGISTRY_CONTRACT_ID}
+      STELLAR_RPC_URL:             ${STELLAR_RPC_URL:-https://soroban-testnet.stellar.org}
+      DATABASE_URL:                postgresql://carbonledger:${POSTGRES_PASSWORD:-changeme}@postgres:5432/carbonledger
+      ADMIN_ALERT_WEBHOOK:         ${ADMIN_ALERT_WEBHOOK}
+      GOLD_STANDARD_API_URL:       ${GOLD_STANDARD_API_URL}
+      GOLD_STANDARD_API_KEY:       ${GOLD_STANDARD_API_KEY}
+      VERRA_VCS_API_URL:           ${VERRA_VCS_API_URL}
+      VERRA_VCS_API_KEY:           ${VERRA_VCS_API_KEY}
+    command: python3 verification_listener.py
+    depends_on:
+      - postgres
+
+  oracle_price:
+    build:
+      context: ./oracle
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      ORACLE_SECRET_KEY:         ${ORACLE_SECRET_KEY}
+      CARBON_ORACLE_CONTRACT_ID: ${CARBON_ORACLE_CONTRACT_ID}
+      STELLAR_RPC_URL:           ${STELLAR_RPC_URL:-https://soroban-testnet.stellar.org}
+      XPANSIV_API_KEY:           ${XPANSIV_API_KEY}
+      TOUCAN_API_KEY:            ${TOUCAN_API_KEY}
+      ADMIN_ALERT_WEBHOOK:       ${ADMIN_ALERT_WEBHOOK}
+    command: python3 price_oracle.py
+
+  oracle_satellite:
+    build:
+      context: ./oracle
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      ORACLE_SECRET_KEY:         ${ORACLE_SECRET_KEY}
+      CARBON_ORACLE_CONTRACT_ID: ${CARBON_ORACLE_CONTRACT_ID}
+      STELLAR_RPC_URL:           ${STELLAR_RPC_URL:-https://soroban-testnet.stellar.org}
+      BACKEND_API_URL:           http://backend:3001/api/v1
+      GEE_WEBHOOK_SECRET:        ${GEE_WEBHOOK_SECRET}
+      ADMIN_ALERT_WEBHOOK:       ${ADMIN_ALERT_WEBHOOK}
+      SATELLITE_MONITOR_PORT:    5001
+    command: python3 satellite_monitor.py
+    ports:
+      - "5001:5001"
+
+volumes:
+  postgres_data:

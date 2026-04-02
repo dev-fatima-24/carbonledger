@@ -1,0 +1,52 @@
+# CarbonLedger Stellar.toml
+# SEP-0001 compliant
+
+VERSION = "2.0.0"
+
+NETWORK_PASSPHRASE = "Test SDF Network ; September 2015"
+HORIZON_URL        = "https://horizon-testnet.stellar.org"
+FEDERATION_SERVER  = "https://carbonledger.io/federation"
+AUTH_SERVER        = "https://carbonledger.io/auth"
+TRANSFER_SERVER    = "https://carbonledger.io/transfer"
+WEB_AUTH_ENDPOINT  = "https://carbonledger.io/auth"
+SIGNING_KEY        = "REPLACE_WITH_SIGNING_PUBLIC_KEY"
+ACCOUNTS           = ["REPLACE_WITH_ISSUER_PUBLIC_KEY"]
+
+[DOCUMENTATION]
+ORG_NAME          = "CarbonLedger"
+ORG_DBA           = "CarbonLedger Protocol"
+ORG_URL           = "https://carbonledger.io"
+ORG_LOGO          = "https://carbonledger.io/logo.png"
+ORG_DESCRIPTION   = "Verified carbon credit marketplace on Stellar. Every credit has a complete audit trail from project registration to satellite monitoring to permanent on-chain retirement."
+ORG_PHYSICAL_ADDRESS = "Decentralized"
+ORG_OFFICIAL_EMAIL   = "hello@carbonledger.io"
+ORG_SUPPORT_EMAIL    = "support@carbonledger.io"
+ORG_GITHUB           = "https://github.com/carbonledger"
+ORG_TWITTER          = "@carbonledger"
+
+[[PRINCIPALS]]
+name  = "CarbonLedger Team"
+email = "team@carbonledger.io"
+github = "carbonledger"
+
+[[CURRENCIES]]
+code        = "CBON"
+issuer      = "REPLACE_WITH_ISSUER_PUBLIC_KEY"
+display_decimals = 7
+name        = "CarbonLedger Credit"
+desc        = "Tokenized verified carbon credit. 1 CBON = 1 tonne CO2 equivalent. Each credit has a unique serial number and full provenance from project registration to retirement."
+conditions  = "Credits are minted only for verified projects with satellite monitoring. Retirement is permanent and irreversible on-chain."
+image       = "https://carbonledger.io/cbon-logo.png"
+status      = "test"
+is_asset_anchored = true
+anchor_asset_type = "other"
+anchor_asset  = "Verified Carbon Credit (tCO2e)"
+attestation_of_reserve = "https://carbonledger.io/audit"
+redemption_instructions = "Retire credits via the CarbonLedger marketplace at https://carbonledger.io/retire"
+
+[[VALIDATORS]]
+ALIAS   = "carbonledger-validator"
+DISPLAY_NAME = "CarbonLedger Validator"
+PUBLIC_KEY   = "REPLACE_WITH_VALIDATOR_PUBLIC_KEY"
+HOST         = "carbonledger.io:11625"
+HISTORY      = "https://history.carbonledger.io/{0}"

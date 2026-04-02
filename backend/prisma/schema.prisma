@@ -1,0 +1,121 @@
+// This is your Prisma schema file
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model CarbonProject {
+  id                  String   @id @default(cuid())
+  projectId           String   @unique
+  name                String
+  methodology         String
+  country             String
+  projectType         String
+  status              String   @default("Pending")
+  vintageYear         Int
+  totalCreditsIssued  Int      @default(0)
+  totalCreditsRetired Int      @default(0)
+  metadataCid         String
+  verifierAddress     String
+  ownerAddress        String
+  coordinates         Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  batches     CreditBatch[]
+  retirements RetirementRecord[]
+  listings    MarketListing[]
+  monitoring  MonitoringData[]
+}
+
+model CreditBatch {
+  id          String   @id @default(cuid())
+  batchId     String   @unique
+  projectId   String
+  vintageYear Int
+  amount      Int
+  serialStart String
+  serialEnd   String
+  status      String   @default("Active")
+  metadataCid String
+  issuedAt    DateTime @default(now())
+
+  project     CarbonProject      @relation(fields: [projectId], references: [projectId])
+  retirements RetirementRecord[]
+  listings    MarketListing[]
+}
+
+model RetirementRecord {
+  id               String   @id @default(cuid())
+  retirementId     String   @unique
+  batchId          String
+  projectId        String
+  amount           Int
+  retiredBy        String
+  beneficiary      String
+  retirementReason String
+  vintageYear      Int
+  serialNumbers    String[]
+  txHash           String
+  retiredAt        DateTime @default(now())
+
+  batch   CreditBatch   @relation(fields: [batchId], references: [batchId])
+  project CarbonProject @relation(fields: [projectId], references: [projectId])
+}
+
+model MarketListing {
+  id              String   @id @default(cuid())
+  listingId       String   @unique
+  projectId       String
+  batchId         String
+  seller          String
+  amountAvailable Int
+  pricePerCredit  String
+  vintageYear     Int
+  methodology     String
+  country         String
+  status          String   @default("Active")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  project CarbonProject @relation(fields: [projectId], references: [projectId])
+  batch   CreditBatch   @relation(fields: [batchId], references: [batchId])
+}
+
+model MonitoringData {
+  id               String   @id @default(cuid())
+  projectId        String
+  period           String
+  tonnesVerified   Int
+  methodologyScore Int
+  satelliteCid     String
+  submittedBy      String
+  submittedAt      DateTime @default(now())
+
+  project CarbonProject @relation(fields: [projectId], references: [projectId])
+
+  @@unique([projectId, period])
+}
+
+model OracleUpdate {
+  id               String   @id @default(cuid())
+  projectId        String
+  period           String
+  tonnesVerified   Int
+  methodologyScore Int
+  txHash           String
+  status           String
+  submittedAt      DateTime @default(now())
+}
+
+model User {
+  id        String   @id @default(cuid())
+  publicKey String   @unique
+  role      String   @default("corporation")
+  createdAt DateTime @default(now())
+}

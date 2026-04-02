@@ -1,0 +1,182 @@
+"use client";
+
+import { useProject, useRetirements } from "../../../lib/api";
+import { formatTonnes } from "../../../lib/carbon-utils";
+import { colors, statusBadge } from "../../../styles/design-system";
+import OracleStatus from "../../../components/OracleStatus";
+import ProvenanceTrail from "../../../components/ProvenanceTrail";
+import LoadingSkeleton from "../../../components/LoadingSkeleton";
+
+export default function ProjectDetailPage({ params }: { params: { id: string } }) {
+  const { data: project, isLoading } = useProject(params.id);
+  const { data: retirements } = useRetirements(50);
+
+  const projectRetirements = (retirements ?? []).filter(r => r.projectId === params.id);
+
+  if (isLoading) return (
+    <div style={{ maxWidth: "900px", margin: "2rem auto", padding: "0 2rem" }}>
+      <LoadingSkeleton variant="CreditCard" count={3} />
+    </div>
+  );
+
+  if (!project) return (
+    <div style={{ textAlign: "center", padding: "4rem" }}>
+      <p style={{ color: colors.neutral[500] }}>Project not found.</p>
+    </div>
+  );
+
+  const badge = statusBadge(project.status);
+  const retiredPct = project.totalCreditsIssued > 0
+    ? Math.round((project.totalCreditsRetired / project.totalCreditsIssued) * 100)
+    : 0;
+
+  const provenanceEvents = [
+    { type: "registered" as const, label: "Project Registered", timestamp: project.createdAt, detail: `${project.methodology} · ${project.country}` },
+    ...(project.status !== "Pending" ? [{ type: "verified" as const, label: "Project Verified", timestamp: project.createdAt, detail: "Independently verified by accredited verifier" }] : []),
+    ...(project.totalCreditsIssued > 0 ? [{ type: "minted" as const, label: "Credits Issued", timestamp: project.createdAt, detail: `${formatTonnes(project.totalCreditsIssued)} issued with unique serial numbers` }] : []),
+  ];
+
+  return (
+    <div style={{ maxWidth: "1000px", margin: "0 auto", padding: "2.5rem 2rem" }}>
+      {/* Header */}
+      <div style={{ marginBottom: "2rem" }}>
+        <a href="/projects" style={{ fontSize: "0.875rem", color: colors.primary[600], textDecoration: "none" }}>
+          ← All Projects
+        </a>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginTop: "1rem" }}>
+          <div>
+            <h1 style={{ fontSize: "2rem", fontWeight: 800, color: colors.neutral[900], margin: "0 0 0.5rem" }}>
+              {project.name}
+            </h1>
+            <p style={{ color: colors.neutral[500], margin: 0 }}>
+              {project.methodology} · {project.projectType} · {project.country} · {project.vintageYear} Vintage
+            </p>
+          </div>
+          <span style={{
+            background: badge.bg, color: badge.text, border: `1px solid ${badge.border}`,
+            borderRadius: "9999px", padding: "0.3rem 0.75rem", fontSize: "0.8rem", fontWeight: 700,
+          }}>
+            {project.status}
+          </span>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "2rem" }}>
+        {/* Left column */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+          {/* Stats */}
+          <div style={{
+            background: colors.surface, border: `1px solid ${colors.neutral[200]}`,
+            borderRadius: "0.75rem", padding: "1.5rem",
+          }}>
+            <h2 style={{ fontSize: "1rem", fontWeight: 700, color: colors.neutral[800], margin: "0 0 1rem" }}>
+              Credit Summary
+            </h2>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "1rem" }}>
+              {[
+                { label: "Total Issued",   value: formatTonnes(project.totalCreditsIssued),   color: colors.primary[700] },
+                { label: "Total Retired",  value: formatTonnes(project.totalCreditsRetired),  color: colors.neutral[700] },
+                { label: "Retirement Rate", value: `${retiredPct}%`,                          color: retiredPct > 50 ? colors.primary[600] : colors.neutral[600] },
+              ].map(({ label, value, color }) => (
+                <div key={label}>
+                  <p style={{ fontSize: "0.7rem", color: colors.neutral[400], margin: "0 0 0.2rem" }}>{label}</p>
+                  <p style={{ fontSize: "1.25rem", fontWeight: 800, color, margin: 0 }}>{value}</p>
+                </div>
+              ))}
+            </div>
+            {/* Progress bar */}
+            <div style={{ marginTop: "1rem" }}>
+              <div style={{ background: colors.neutral[100], borderRadius: "9999px", height: "8px", overflow: "hidden" }}>
+                <div style={{
+                  background: colors.primary[500], height: "100%",
+                  width: `${retiredPct}%`, borderRadius: "9999px",
+                  transition: "width 0.5s",
+                }} />
+              </div>
+              <p style={{ fontSize: "0.7rem", color: colors.neutral[400], margin: "0.3rem 0 0" }}>
+                {retiredPct}% of issued credits have been permanently retired
+              </p>
+            </div>
+          </div>
+
+          {/* Provenance */}
+          <div style={{
+            background: colors.surface, border: `1px solid ${colors.neutral[200]}`,
+            borderRadius: "0.75rem", padding: "1.5rem",
+          }}>
+            <h2 style={{ fontSize: "1rem", fontWeight: 700, color: colors.neutral[800], margin: "0 0 1.25rem" }}>
+              Audit Trail
+            </h2>
+            <ProvenanceTrail events={provenanceEvents} />
+          </div>
+
+          {/* Recent retirements */}
+          {projectRetirements.length > 0 && (
+            <div style={{
+              background: colors.surface, border: `1px solid ${colors.neutral[200]}`,
+              borderRadius: "0.75rem", padding: "1.5rem",
+            }}>
+              <h2 style={{ fontSize: "1rem", fontWeight: 700, color: colors.neutral[800], margin: "0 0 1rem" }}>
+                Recent Retirements
+              </h2>
+              {projectRetirements.slice(0, 5).map(r => (
+                <div key={r.retirementId} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "0.75rem 0", borderBottom: `1px solid ${colors.neutral[100]}`,
+                }}>
+                  <div>
+                    <p style={{ fontWeight: 600, fontSize: "0.875rem", color: colors.neutral[800], margin: 0 }}>{r.beneficiary}</p>
+                    <p style={{ fontSize: "0.75rem", color: colors.neutral[400], margin: "0.1rem 0 0" }}>{r.retirementReason}</p>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <p style={{ fontWeight: 700, color: colors.primary[700], margin: 0 }}>{formatTonnes(r.amount)}</p>
+                    <a href={`/retire/${r.retirementId}`} style={{ fontSize: "0.75rem", color: colors.primary[600] }}>
+                      Certificate →
+                    </a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Right column */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+          <OracleStatus projectId={project.projectId} />
+
+          {/* IPFS docs */}
+          {project.metadataCid && (
+            <div style={{
+              background: colors.surface, border: `1px solid ${colors.neutral[200]}`,
+              borderRadius: "0.75rem", padding: "1.25rem",
+            }}>
+              <h3 style={{ fontSize: "0.875rem", fontWeight: 700, color: colors.neutral[800], margin: "0 0 0.75rem" }}>
+                Project Documents
+              </h3>
+              <a
+                href={`https://gateway.pinata.cloud/ipfs/${project.metadataCid}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: "flex", alignItems: "center", gap: "0.5rem",
+                  fontSize: "0.8rem", color: colors.primary[600], textDecoration: "none",
+                }}
+              >
+                <span>📄</span> View on IPFS →
+              </a>
+            </div>
+          )}
+
+          <a href={`/marketplace?project=${project.projectId}`} style={{
+            display: "block",
+            background: colors.primary[600], color: "#fff",
+            borderRadius: "0.5rem", padding: "0.875rem",
+            fontSize: "0.9rem", fontWeight: 700, textDecoration: "none", textAlign: "center",
+          }}>
+            Buy Credits from This Project
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}

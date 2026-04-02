@@ -1,0 +1,113 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { colors } from "../styles/design-system";
+
+export type ToastType = "success" | "error" | "warning" | "info";
+
+export interface ToastMessage {
+  id: string;
+  type: ToastType;
+  title: string;
+  message?: string;
+  txHash?: string;
+}
+
+interface Props {
+  toasts: ToastMessage[];
+  onDismiss: (id: string) => void;
+}
+
+const toastConfig: Record<ToastType, { bg: string; border: string; icon: string; titleColor: string }> = {
+  success: { bg: colors.verified.bg,   border: colors.verified.border,   icon: "✅", titleColor: colors.verified.text },
+  error:   { bg: "#fee2e2",            border: "#fca5a5",                 icon: "❌", titleColor: "#991b1b" },
+  warning: { bg: colors.pending.bg,    border: colors.pending.border,     icon: "⚠️", titleColor: colors.pending.text },
+  info:    { bg: "#eff6ff",            border: "#93c5fd",                 icon: "ℹ️", titleColor: "#1d4ed8" },
+};
+
+function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: string) => void }) {
+  const cfg = toastConfig[toast.type];
+
+  useEffect(() => {
+    const t = setTimeout(() => onDismiss(toast.id), 6000);
+    return () => clearTimeout(t);
+  }, [toast.id, onDismiss]);
+
+  return (
+    <div style={{
+      background: cfg.bg,
+      border: `1px solid ${cfg.border}`,
+      borderRadius: "0.5rem",
+      padding: "0.875rem 1rem",
+      display: "flex",
+      gap: "0.75rem",
+      alignItems: "flex-start",
+      boxShadow: "0 4px 12px rgb(0 0 0 / 0.1)",
+      minWidth: "300px",
+      maxWidth: "420px",
+    }}>
+      <span style={{ fontSize: "1rem", flexShrink: 0 }}>{cfg.icon}</span>
+      <div style={{ flex: 1 }}>
+        <p style={{ fontWeight: 700, fontSize: "0.875rem", color: cfg.titleColor, margin: 0 }}>
+          {toast.title}
+        </p>
+        {toast.message && (
+          <p style={{ fontSize: "0.8rem", color: colors.neutral[600], margin: "0.2rem 0 0" }}>
+            {toast.message}
+          </p>
+        )}
+        {toast.txHash && (
+          <a
+            href={`https://stellar.expert/explorer/testnet/tx/${toast.txHash}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: "0.75rem", color: colors.primary[600], fontFamily: "monospace" }}
+          >
+            View transaction →
+          </a>
+        )}
+      </div>
+      <button
+        onClick={() => onDismiss(toast.id)}
+        style={{ background: "none", border: "none", cursor: "pointer", color: colors.neutral[400], fontSize: "1rem", padding: 0 }}
+        aria-label="Dismiss"
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
+export default function Toast({ toasts, onDismiss }: Props) {
+  return (
+    <div style={{
+      position: "fixed",
+      bottom: "1.5rem",
+      right: "1.5rem",
+      display: "flex",
+      flexDirection: "column",
+      gap: "0.75rem",
+      zIndex: 9999,
+    }}>
+      {toasts.map(t => (
+        <ToastItem key={t.id} toast={t} onDismiss={onDismiss} />
+      ))}
+    </div>
+  );
+}
+
+// Hook for managing toasts
+export function useToast() {
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  function addToast(toast: Omit<ToastMessage, "id">) {
+    const id = Math.random().toString(36).slice(2);
+    setToasts(prev => [...prev, { ...toast, id }]);
+  }
+
+  function dismiss(id: string) {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }
+
+  return { toasts, addToast, dismiss };
+}
