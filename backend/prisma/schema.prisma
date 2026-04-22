@@ -119,3 +119,19 @@ model User {
   role      String   @default("corporation")
   createdAt DateTime @default(now())
 }
+
+model Job {
+  id          String    @id @default(cuid())
+  queue       String
+  type        String
+  payload     Json
+  status      String    @default("waiting")  // waiting | active | completed | failed | dead
+  attempts    Int       @default(0)
+  result      Json?
+  error       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([queue, status])
+  @@index([type])
+}
