@@ -110,6 +110,9 @@ pub struct CarbonCreditContract;
 impl CarbonCreditContract {
 
     /// Initialise with admin address.
+    // AUDIT-NOTE [CRITICAL]: No re-initialisation guard. A second call overwrites Admin
+    // and RegistryContract, allowing an attacker to take over minting authority.
+    // Fix: check `env.storage().persistent().has(&DataKey::Admin)` before writing.
     pub fn initialize(env: Env, admin: Address, registry_contract: Address) {
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
@@ -154,6 +157,11 @@ impl CarbonCreditContract {
             return Err(CarbonError::SerialNumberConflict);
         }
 
+        // AUDIT-NOTE [HIGH]: No cross-contract call to carbon_registry to verify the
+        // project is in `Verified` status. Credits can be minted for Pending, Rejected,
+        // or Suspended projects. Fix: invoke carbon_registry::get_project() and assert
+        // status == ProjectStatus::Verified before proceeding.
+
         // Enforce global serial uniqueness
         if !Self::verify_serial_range_internal(&env, serial_start, serial_end) {
             return Err(CarbonError::DoubleCountingDetected);
@@ -161,6 +169,10 @@ impl CarbonCreditContract {
 
         // ── effects ───────────────────────────────────────────────────────────
         // Register serial range globally
+        // AUDIT-NOTE [LOW]: SerialRegistry is an unbounded Vec. The overlap check is
+        // O(n) over all historical ranges. With enough batches, this will exceed
+        // Soroban's instruction limit, permanently bricking new minting. Fix: replace
+        // with a sorted interval structure or a bitmap keyed by range blocks.
         let mut ranges: Vec<SerialRange> = env
             .storage()
             .persistent()
@@ -219,6 +231,11 @@ impl CarbonCreditContract {
         // ── checks ────────────────────────────────────────────────────────────
         holder.require_auth();
 
+        // AUDIT-NOTE [HIGH]: No ownership check. Any authenticated address can retire
+        // any batch, permanently destroying credits they do not own. Fix: maintain an
+        // on-chain Map<batch_id, Address> ownership record updated by transfer_credits
+        // and mint_credits, and assert ownership here.
+
         if amount <= 0 {
             return Err(CarbonError::ZeroAmountNotAllowed);
         }
@@ -245,6 +262,11 @@ impl CarbonCreditContract {
             .get(&RetiredKey::BatchRetired(batch_id.clone()))
             .unwrap_or(0i128);
 
+        // AUDIT-NOTE [HIGH]: Unchecked i128 → u64 cast. If `already_retired` exceeds
+        // u64::MAX (~1.8×10¹⁹), the cast wraps silently in release Wasm builds,
+        // producing incorrect serial numbers in the certificate and potentially
+        // re-issuing serial numbers that were already retired.
+        // Fix: use `u64::try_from(already_retired).map_err(|_| CarbonError::InvalidSerialRange)?`
         let retire_serial_start = batch.serial_start + already_retired as u64;
         let retire_serial_end   = retire_serial_start + amount as u64 - 1;
 
@@ -324,6 +346,10 @@ impl CarbonCreditContract {
         }
 
         // ── effects ───────────────────────────────────────────────────────────
+        // AUDIT-NOTE [HIGH]: Transfer is a no-op — no ownership record is updated.
+        // Only an event is emitted. This means on-chain state does not reflect the
+        // new owner, so retire_credits cannot enforce ownership. Fix: maintain a
+        // Map<batch_id, Address> and update it here and in mint_credits.
         env.events().publish(
             (symbol_short!("c_ledger"), symbol_short!("transfer")),
             (batch_id, from, to, amount),

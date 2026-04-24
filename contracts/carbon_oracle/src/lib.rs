@@ -75,6 +75,10 @@ pub struct CarbonOracleContract;
 impl CarbonOracleContract {
 
     /// Initialise oracle with admin and authorised oracle signer address.
+    // AUDIT-NOTE [CRITICAL]: No re-initialisation guard. A second call overwrites Admin
+    // and OracleAddress. An attacker who can call initialize() can replace the oracle
+    // with an address they control, then push false monitoring data and prices.
+    // Fix: check `env.storage().persistent().has(&DataKey::Admin)` before writing.
     pub fn initialize(env: Env, admin: Address, oracle_address: Address) {
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
@@ -158,6 +162,11 @@ impl CarbonOracleContract {
         }
 
         // ── effects ───────────────────────────────────────────────────────────
+        // AUDIT-NOTE [LOW]: No price deviation guard. A single oracle update can move
+        // the benchmark price by any amount. The README specifies a 15% alert threshold
+        // but it is not enforced on-chain. A compromised oracle can set price to 1 stroop,
+        // enabling near-free purchases if the marketplace uses this price as a floor.
+        // Fix: read the previous price and reject updates that deviate by more than 15%.
         let key = DataKey::BenchmarkPrice(methodology.clone(), vintage_year);
         env.storage().temporary().set(&key, &price_usdc);
         env.storage().temporary().extend_ttl(&key, PRICE_CACHE_TTL_LEDGERS, PRICE_CACHE_TTL_LEDGERS);
@@ -204,6 +213,11 @@ impl CarbonOracleContract {
     ///
     /// # Errors
     /// - [`CarbonError::UnauthorizedOracle`] if caller is not the registered oracle.
+    // AUDIT-NOTE [MEDIUM]: flag_project stores the flag in oracle storage and emits an
+    // event, but does NOT call carbon_registry::suspend_project(). The flag has no
+    // on-chain enforcement — carbon_credit::mint_credits() will not see it. Fix: either
+    // make flag_project call carbon_registry::suspend_project() via cross-contract call,
+    // or have mint_credits check carbon_oracle::is_flagged() before minting.
     pub fn flag_project(
         env: Env,
         oracle_signer: Address,

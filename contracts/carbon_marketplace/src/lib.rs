@@ -80,6 +80,10 @@ pub struct CarbonMarketplaceContract;
 impl CarbonMarketplaceContract {
 
     /// Initialise marketplace with admin and USDC token contract address.
+    // AUDIT-NOTE [CRITICAL]: No re-initialisation guard. A second call overwrites Admin
+    // and UsdcToken. An attacker could redirect protocol fees to their own address by
+    // replacing Admin, or redirect USDC transfers by replacing UsdcToken with a malicious
+    // token contract. Fix: check `env.storage().persistent().has(&DataKey::Admin)`.
     pub fn initialize(env: Env, admin: Address, usdc_token: Address) {
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
@@ -106,6 +110,15 @@ impl CarbonMarketplaceContract {
     ) -> Result<(), CarbonError> {
         // ── checks ────────────────────────────────────────────────────────────
         seller.require_auth();
+
+        // AUDIT-NOTE [MEDIUM]: No deduplication check on listing_id. A duplicate
+        // listing_id silently overwrites the existing listing, allowing a seller to
+        // zero out another listing's amount_available or change its price.
+        // Fix: check `env.storage().persistent().has(&DataKey::Listing(listing_id.clone()))`.
+        //
+        // AUDIT-NOTE [MEDIUM]: No check that `seller` actually holds `batch_id` in
+        // carbon_credit. Any authenticated address can list any batch. Fix: cross-contract
+        // call to carbon_credit to verify ownership before creating the listing.
 
         if amount <= 0 || price_per_credit_usdc <= 0 {
             return Err(CarbonError::ZeroAmountNotAllowed);
@@ -200,6 +213,10 @@ impl CarbonMarketplaceContract {
         }
 
         // ── effects ───────────────────────────────────────────────────────────
+        // AUDIT-NOTE [HIGH]: Unchecked i128 multiplication. If price_per_credit and
+        // amount are both large (e.g., price = i128::MAX / 2, amount = 2), total_cost
+        // overflows and wraps to a small or negative value, allowing a buyer to purchase
+        // credits for near-zero USDC. Fix: use checked_mul and return an error on overflow.
         let total_cost = listing.price_per_credit * amount;
         let protocol_fee = total_cost / 100; // 1%
         let seller_proceeds = total_cost - protocol_fee;
@@ -231,6 +248,11 @@ impl CarbonMarketplaceContract {
     ///
     /// # Errors
     /// - Any error from individual [`purchase_credits`] calls propagates immediately.
+    // AUDIT-NOTE [MEDIUM]: Atomicity depends entirely on Soroban transaction semantics.
+    // If any iteration fails after earlier USDC transfers have been submitted, the
+    // Soroban runtime must revert the entire transaction for this to be safe. Auditors
+    // should verify that a mid-loop CarbonError return causes a full transaction revert
+    // including all token::Client::transfer() calls made in prior iterations.
     pub fn bulk_purchase(
         env: Env,
         buyer: Address,
@@ -260,6 +282,8 @@ impl CarbonMarketplaceContract {
                 return Err(CarbonError::InsufficientLiquidity);
             }
 
+            // AUDIT-NOTE [HIGH]: Same unchecked i128 multiplication as purchase_credits.
+            // Fix: use checked_mul.
             let total_cost = listing.price_per_credit * amount;
             let protocol_fee = total_cost / 100;
             let seller_proceeds = total_cost - protocol_fee;
