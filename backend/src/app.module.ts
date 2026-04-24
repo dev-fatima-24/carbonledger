@@ -6,6 +6,7 @@ import { RetirementsModule } from "./retirements/retirements.module";
 import { MarketplaceModule } from "./marketplace/marketplace.module";
 import { OracleModule } from "./oracle/oracle.module";
 import { StatsModule } from "./stats/stats.module";
+import { VerifiersModule } from "./verifiers/verifiers.module";
 import { PrismaService } from "./prisma.service";
 
 @Module({
@@ -17,6 +18,7 @@ import { PrismaService } from "./prisma.service";
     MarketplaceModule,
     OracleModule,
     StatsModule,
+    VerifiersModule,
   ],
   providers: [PrismaService],
 })

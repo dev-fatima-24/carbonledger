@@ -119,3 +119,19 @@ model User {
   role      String   @default("corporation")
   createdAt DateTime @default(now())
 }
+
+model VerifierApplication {
+  id               String    @id @default(cuid())
+  publicKey        String    @unique
+  organizationName String
+  accreditationBody String
+  accreditationId  String
+  contactEmail     String
+  documentsCid     String
+  status           String    @default("pending")
+  rejectionReason  String?
+  approvedBy       String?
+  approvedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
