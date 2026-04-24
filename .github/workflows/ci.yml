@@ -27,6 +27,13 @@ jobs:
             contracts/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('contracts/**/Cargo.lock') }}
 
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Security audit
+        working-directory: contracts
+        run: cargo audit
+
       - name: Run contract tests
         working-directory: contracts
         run: cargo test --workspace
@@ -67,6 +74,10 @@ jobs:
         working-directory: backend
         run: npm ci
 
+      - name: Security audit
+        working-directory: backend
+        run: npm audit --audit-level=high
+
       - name: Validate Prisma schema
         working-directory: backend
         env:
@@ -97,6 +108,10 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      - name: Security audit
+        working-directory: frontend
+        run: npm audit --audit-level=high
+
       - name: Type check
         working-directory: frontend
         run: npx tsc --noEmit || true
@@ -125,7 +140,13 @@ jobs:
 
       - name: Install dependencies
         working-directory: oracle
-        run: pip install -r requirements.txt
+        run: |
+          pip install pip-audit
+          pip install -r requirements.txt
+
+      - name: Security audit
+        working-directory: oracle
+        run: pip-audit -r requirements.txt
 
       - name: Syntax check
         working-directory: oracle
