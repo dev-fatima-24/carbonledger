@@ -6,6 +6,10 @@ use soroban_sdk::{
     symbol_short, vec,
 };
 
+/// TTL extension in ledgers (~30 days at 5s/ledger).
+/// Cost: ~0.00001 XLM per ledger entry extended. See docs/ttl-cost.md.
+const TTL_LEDGERS: u32 = 518_400;
+
 // ── Error Enum ────────────────────────────────────────────────────────────────
 
 #[contracterror]
@@ -181,6 +185,7 @@ impl CarbonCreditContract {
             metadata_cid: metadata_cid.clone(),
         };
         env.storage().persistent().set(&DataKey::Batch(batch_id.clone()), &batch);
+        Self::extend_batch_ttl(&env, &batch_id);
 
         // Append to project batch index
         let mut project_batches: Vec<String> = env
@@ -266,6 +271,7 @@ impl CarbonCreditContract {
             CreditStatus::PartiallyRetired
         };
         env.storage().persistent().set(&DataKey::Batch(batch_id.clone()), &batch);
+        Self::extend_batch_ttl(&env, &batch_id);
 
         let cert = RetirementCertificate {
             retirement_id:     retirement_id.clone(),
@@ -372,11 +378,24 @@ impl CarbonCreditContract {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
+    /// Extend TTL on a batch entry so it is not evicted by Soroban rent.
+    /// Called on every read/write to active batches.
+    fn extend_batch_ttl(env: &Env, batch_id: &String) {
+        let key = DataKey::Batch(batch_id.clone());
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+        }
+    }
+
     fn load_batch(env: &Env, batch_id: &String) -> Result<CreditBatch, CarbonError> {
-        env.storage()
+        let key = DataKey::Batch(batch_id.clone());
+        let batch = env.storage()
             .persistent()
-            .get(&DataKey::Batch(batch_id.clone()))
-            .ok_or(CarbonError::ProjectNotFound)
+            .get(&key)
+            .ok_or(CarbonError::ProjectNotFound)?;
+        // Extend TTL on every read so active batches never expire
+        env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+        Ok(batch)
     }
 
     fn require_admin(env: &Env, caller: &Address) -> Result<(), CarbonError> {
@@ -623,6 +642,31 @@ mod tests {
         c.initialize(&admin, &registry);
 
         let result = c.try_mint_credits(&admin, &s(&env, "p1"), &0_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_expired_batch_returns_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let registry = Address::generate(&env);
+        let id = env.register_contract(None, CarbonCreditContract);
+        let c = CarbonCreditContractClient::new(&env, &id);
+        c.initialize(&admin, &registry);
+
+        c.mint_credits(
+            &admin, &s(&env, "p1"), &100_i128, &2023_u32,
+            &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"),
+        ).unwrap();
+
+        // Simulate expiry by advancing ledger sequence past TTL
+        env.ledger().with_mut(|li| {
+            li.sequence_number += TTL_LEDGERS + 1;
+        });
+
+        // After expiry the entry is gone — load_batch should return ProjectNotFound
+        let result = c.try_get_credit_batch(&s(&env, "b1"));
         assert!(result.is_err());
     }
 }
