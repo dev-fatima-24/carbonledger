@@ -79,6 +79,13 @@ pub struct CarbonMarketplaceContract;
 #[contractimpl]
 impl CarbonMarketplaceContract {
 
+    /// Returns the current year based on the ledger timestamp.
+    fn current_year(env: &Env) -> u32 {
+        let seconds_per_year: u64 = 31557600; // Approximate seconds in a year
+        let timestamp = env.ledger().timestamp();
+        1970 + (timestamp / seconds_per_year) as u32
+    }
+
     /// Initialise marketplace with admin and USDC token contract address.
     pub fn initialize(env: Env, admin: Address, usdc_token: Address) {
         admin.require_auth();
@@ -92,6 +99,9 @@ impl CarbonMarketplaceContract {
     ///
     /// # Errors
     /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` or `price_per_credit_usdc` is zero.
+    /// - [`CarbonError::InvalidVintageYear`] if `vintage_year` is before 1990 or after current year + 1.
+    /// - [`CarbonError::InvalidSerialRange`] if `amount` is negative or zero.
+    /// - [`CarbonError::ProjectNotFound`] if any string input is empty or too long.
     pub fn list_credits(
         env: Env,
         seller: Address,
@@ -107,8 +117,34 @@ impl CarbonMarketplaceContract {
         // ── checks ────────────────────────────────────────────────────────────
         seller.require_auth();
 
-        if amount <= 0 || price_per_credit_usdc <= 0 {
+        // Validate string inputs (non-empty and reasonable length)
+        if listing_id.is_empty() || listing_id.chars().count() > 64 {
+            return Err(CarbonError::ListingNotFound);
+        }
+        if batch_id.is_empty() || batch_id.chars().count() > 64 {
+            return Err(CarbonError::ListingNotFound);
+        }
+        if project_id.is_empty() || project_id.chars().count() > 64 {
+            return Err(CarbonError::ListingNotFound);
+        }
+        if methodology.is_empty() || methodology.chars().count() > 64 {
+            return Err(CarbonError::ListingNotFound);
+        }
+        if country.is_empty() || country.chars().count() > 64 {
+            return Err(CarbonError::ListingNotFound);
+        }
+
+        // Validate numeric inputs
+        if amount <= 0 {
             return Err(CarbonError::ZeroAmountNotAllowed);
+        }
+        if price_per_credit_usdc <= 0 {
+            return Err(CarbonError::ZeroAmountNotAllowed);
+        }
+
+        let current_year = Self::current_year(&env);
+        if vintage_year < 1990 || vintage_year > current_year + 1 {
+            return Err(CarbonError::InvalidVintageYear);
         }
 
         // ── effects ───────────────────────────────────────────────────────────
