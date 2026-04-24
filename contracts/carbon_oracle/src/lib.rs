@@ -2,8 +2,8 @@
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror,
-    Address, Env, String, Vec,
-    symbol_short, vec,
+    Address, Env, String,
+    symbol_short,
 };
 
 // ── Error Enum ────────────────────────────────────────────────────────────────
@@ -265,11 +265,11 @@ mod tests {
 
     fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
 
-    fn setup(env: &Env) -> (CarbonOracleContractClient, Address, Address) {
+    fn setup(env: &Env) -> (CarbonOracleContractClient<'_>, Address, Address) {
         env.mock_all_auths();
         let admin  = Address::generate(env);
         let oracle = Address::generate(env);
-        let id     = env.register_contract(None, CarbonOracleContract);
+        let id     = env.register(CarbonOracleContract, ());
         let client = CarbonOracleContractClient::new(env, &id);
         client.initialize(&admin, &oracle);
         (client, admin, oracle)
@@ -287,9 +287,9 @@ mod tests {
             &5000_i128,
             &85_u32,
             &s(&env, "QmSatCID"),
-        ).unwrap();
+        );
 
-        let data = client.get_monitoring_data(&s(&env, "proj-001"), &s(&env, "2023-Q1")).unwrap();
+        let data = client.get_monitoring_data(&s(&env, "proj-001"), &s(&env, "2023-Q1"));
         assert_eq!(data.tonnes_verified, 5000);
         assert_eq!(data.methodology_score, 85);
     }
@@ -316,8 +316,8 @@ mod tests {
         let env = Env::default();
         let (client, _, oracle) = setup(&env);
 
-        client.update_credit_price(&oracle, &s(&env, "VCS"), &2023_u32, &15_0000000_i128).unwrap();
-        let price = client.get_benchmark_price(&s(&env, "VCS"), &2023_u32).unwrap();
+        client.update_credit_price(&oracle, &s(&env, "VCS"), &2023_u32, &15_0000000_i128);
+        let price = client.get_benchmark_price(&s(&env, "VCS"), &2023_u32);
         assert_eq!(price, 15_0000000_i128);
     }
 
@@ -334,7 +334,7 @@ mod tests {
         let env = Env::default();
         let (client, _, oracle) = setup(&env);
 
-        client.flag_project(&oracle, &s(&env, "proj-001"), &s(&env, "satellite contradiction")).unwrap();
+        client.flag_project(&oracle, &s(&env, "proj-001"), &s(&env, "satellite contradiction"));
         // Verify event was emitted (no error = success)
     }
 
@@ -343,18 +343,6 @@ mod tests {
         let env = Env::default();
         let (client, _, oracle) = setup(&env);
 
-        // Submit monitoring data at timestamp 0
-        env.ledger().set(LedgerInfo {
-            timestamp: 1_000_000,
-            protocol_version: 20,
-            sequence_number: 100,
-            network_id: Default::default(),
-            base_reserve: 10,
-            min_temp_entry_ttl: 1,
-            min_persistent_entry_ttl: 1,
-            max_entry_ttl: 6_312_000,
-        });
-
         client.submit_monitoring_data(
             &oracle,
             &s(&env, "proj-001"),
@@ -362,13 +350,13 @@ mod tests {
             &1000_i128,
             &80_u32,
             &s(&env, "QmCID"),
-        ).unwrap();
+        );
 
-        // Advance time by 366 days
+        // Advance time by 366 days without messing with LedgerInfo which causes archival issues in tests
         env.ledger().set(LedgerInfo {
-            timestamp: 1_000_000 + (366 * 24 * 60 * 60),
-            protocol_version: 20,
-            sequence_number: 200,
+            timestamp: 366 * 24 * 60 * 60 + 1,
+            protocol_version: 22,
+            sequence_number: 10,
             network_id: Default::default(),
             base_reserve: 10,
             min_temp_entry_ttl: 1,
@@ -391,7 +379,7 @@ mod tests {
             &1000_i128,
             &80_u32,
             &s(&env, "QmCID"),
-        ).unwrap();
+        );
 
         assert!(client.is_monitoring_current(&s(&env, "proj-001")));
     }

@@ -343,18 +343,19 @@ impl CarbonMarketplaceContract {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, MockAuth, MockAuthInvoke},
-        vec, Env, IntoVal, String,
+        testutils::Address as _,
+        Env, String,
     };
 
     fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
 
-    fn setup(env: &Env) -> (CarbonMarketplaceContractClient, Address, Address, Address) {
+    fn setup(env: &Env) -> (CarbonMarketplaceContractClient<'_>, Address, Address, Address) {
         env.mock_all_auths();
         let admin  = Address::generate(env);
         let seller = Address::generate(env);
-        let usdc   = env.register_stellar_asset_contract(admin.clone());
-        let id     = env.register_contract(None, CarbonMarketplaceContract);
+        let usdc_contract = env.register_stellar_asset_contract_v2(admin.clone());
+        let usdc = usdc_contract.address();
+        let id     = env.register(CarbonMarketplaceContract, ());
         let client = CarbonMarketplaceContractClient::new(env, &id);
         client.initialize(&admin, &usdc);
         (client, admin, seller, usdc)
@@ -371,7 +372,7 @@ mod tests {
             &2023_u32,
             &s(env, "VCS"),
             &s(env, "Brazil"),
-        ).unwrap();
+        );
     }
 
     #[test]
@@ -379,7 +380,7 @@ mod tests {
         let env = Env::default();
         let (client, _, seller, _) = setup(&env);
         add_listing(&env, &client, &seller);
-        let l = client.get_listing(&s(&env, "list-001")).unwrap();
+        let l = client.get_listing(&s(&env, "list-001"));
         assert_eq!(l.status, ListingStatus::Active);
         assert_eq!(l.amount_available, 100);
     }
@@ -389,8 +390,8 @@ mod tests {
         let env = Env::default();
         let (client, _, seller, _) = setup(&env);
         add_listing(&env, &client, &seller);
-        client.delist_credits(&seller, &s(&env, "list-001")).unwrap();
-        let l = client.get_listing(&s(&env, "list-001")).unwrap();
+        client.delist_credits(&seller, &s(&env, "list-001"));
+        let l = client.get_listing(&s(&env, "list-001"));
         assert_eq!(l.status, ListingStatus::Delisted);
     }
 
