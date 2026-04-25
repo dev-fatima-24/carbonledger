@@ -13,6 +13,7 @@ export interface CarbonProject {
   projectType: string;
   status: string;
   vintageYear: number;
+  methodologyScore: number;
   totalCreditsIssued: number;
   totalCreditsRetired: number;
   metadataCid: string;

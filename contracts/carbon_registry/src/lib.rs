@@ -30,6 +30,7 @@ pub enum CarbonError {
     ZeroAmountNotAllowed  = 16,
     ProjectAlreadyExists  = 17,
     InvalidSerialRange    = 18,
+    AlreadyInitialized    = 19,
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -56,7 +57,7 @@ pub enum ProjectStatus {
 }
 
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CarbonProject {
     pub project_id:            String,
     pub name:                  String,
@@ -67,6 +68,7 @@ pub struct CarbonProject {
     pub metadata_cid:          String,
     pub total_credits_issued:  i128,
     pub total_credits_retired: i128,
+    pub methodology_score:     u32,
     pub status:                ProjectStatus,
     pub vintage_year:          u32,
     pub created_at:            u64,
@@ -81,16 +83,28 @@ pub struct CarbonRegistryContract;
 impl CarbonRegistryContract {
 
     /// Initialise the registry with an admin, oracle address, and initial verifier set.
+    /// Can only be called once — subsequent calls return [`CarbonError::AlreadyInitialized`].
     pub fn initialize(
         env: Env,
         admin: Address,
         oracle_address: Address,
         verifiers: Vec<Address>,
-    ) {
+    ) -> Result<(), CarbonError> {
+        if env.storage().persistent().has(&DataKey::RegistryAdmin) {
+            return Err(CarbonError::AlreadyInitialized);
+        }
         admin.require_auth();
         env.storage().persistent().set(&DataKey::RegistryAdmin, &admin);
         env.storage().persistent().set(&DataKey::OracleAddress, &oracle_address);
         env.storage().persistent().set(&DataKey::Verifiers, &verifiers);
+        Ok(())
+    }
+
+    /// Returns the current year based on the ledger timestamp.
+    fn current_year(env: &Env) -> u32 {
+        let seconds_per_year: u64 = 31557600; // Approximate seconds in a year
+        let timestamp = env.ledger().timestamp();
+        1970 + (timestamp / seconds_per_year) as u32
     }
 
     /// Register a new carbon offset project. Status is set to `Pending` until a
@@ -98,7 +112,7 @@ impl CarbonRegistryContract {
     ///
     /// # Errors
     /// - [`CarbonError::ProjectAlreadyExists`] if `project_id` is already registered.
-    /// - [`CarbonError::InvalidVintageYear`] if `vintage_year` is before 2000 or after 2100.
+    /// - [`CarbonError::InvalidVintageYear`] if `vintage_year` is before 1990 or after current year + 1.
     pub fn register_project(
         env: Env,
         admin: Address,
@@ -109,17 +123,43 @@ impl CarbonRegistryContract {
         methodology: String,
         country: String,
         project_type: String,
+        methodology_score: u32,
         vintage_year: u32,
     ) -> Result<(), CarbonError> {
         // ── checks ────────────────────────────────────────────────────────────
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
+        if project_id.is_empty() || project_id.chars().count() > 64 {
+            return Err(CarbonError::ProjectNotFound); // Reusing an error for simplicity; consider adding new errors
+        }
+        if name.is_empty() || name.chars().count() > 128 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+        if metadata_cid.is_empty() || metadata_cid.chars().count() > 128 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+        if methodology.is_empty() || methodology.chars().count() > 64 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+        if country.is_empty() || country.chars().count() > 64 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+        if project_type.is_empty() || project_type.chars().count() > 64 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+
+        let current_year = Self::current_year(&env);
+        if vintage_year < 1990 || vintage_year > current_year + 1 {
+            return Err(CarbonError::InvalidVintageYear);
+        }
+
+        if methodology_score < 70 {
+            return Err(CarbonError::InvalidVintageYear);
+        }
+
         if env.storage().persistent().has(&DataKey::Project(project_id.clone())) {
             return Err(CarbonError::ProjectAlreadyExists);
-        }
-        if vintage_year < 2000 || vintage_year > 2100 {
-            return Err(CarbonError::InvalidVintageYear);
         }
 
         // ── effects ───────────────────────────────────────────────────────────
@@ -133,6 +173,7 @@ impl CarbonRegistryContract {
             metadata_cid:          metadata_cid.clone(),
             total_credits_issued:  0,
             total_credits_retired: 0,
+            methodology_score,
             status:                ProjectStatus::Pending,
             vintage_year,
             created_at:            env.ledger().timestamp(),
@@ -141,7 +182,7 @@ impl CarbonRegistryContract {
 
         env.events().publish(
             (symbol_short!("c_ledger"), symbol_short!("reg_proj")),
-            (project_id, methodology, country, vintage_year),
+            (project_id, methodology, country, vintage_year, methodology_score),
         );
         Ok(())
     }
@@ -152,6 +193,9 @@ impl CarbonRegistryContract {
     /// # Errors
     /// - [`CarbonError::UnauthorizedVerifier`] if caller is not a registered verifier.
     /// - [`CarbonError::ProjectNotFound`] if `project_id` does not exist.
+    // AUDIT-NOTE [MEDIUM]: No self-approval guard. A verifier who is also listed as
+    // `verifier_address` on a project they submitted can approve their own project.
+    // Fix: check `project.verifier_address != verifier_address` before approving.
     pub fn verify_project(
         env: Env,
         verifier_address: Address,
@@ -266,6 +310,12 @@ impl CarbonRegistryContract {
     }
 
     /// Increment the issued credit counter for a project (called by carbon_credit contract).
+    // AUDIT-NOTE [HIGH]: This function is gated by the oracle address, not the
+    // carbon_credit contract address. In practice it should only be callable by
+    // carbon_credit during mint_credits. If the oracle key is compromised, an attacker
+    // can inflate total_credits_issued without actually minting any credits, corrupting
+    // the project's accounting. Fix: gate on the carbon_credit contract address instead,
+    // or add a separate CreditContract role.
     pub fn increment_issued(
         env: Env,
         oracle_address: Address,
@@ -340,7 +390,7 @@ mod tests {
         let oracle   = Address::generate(&env);
         let verifier = Address::generate(&env);
         let client = CarbonRegistryContractClient::new(&env, &env.register_contract(None, CarbonRegistryContract));
-        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]);
+        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]).unwrap();
         (env, admin, oracle, verifier)
     }
 
@@ -367,7 +417,7 @@ mod tests {
         let (env, admin, oracle, verifier) = setup();
         let contract_id = env.register_contract(None, CarbonRegistryContract);
         let client = CarbonRegistryContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]);
+        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]).unwrap();
 
         register(&env, &client, &admin);
         let p = client.get_project(&make_str(&env, "proj-001")).unwrap();
@@ -380,7 +430,7 @@ mod tests {
         let (env, admin, oracle, verifier) = setup();
         let contract_id = env.register_contract(None, CarbonRegistryContract);
         let client = CarbonRegistryContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]);
+        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]).unwrap();
 
         register(&env, &client, &admin);
         let result = client.try_register_project(
@@ -402,7 +452,7 @@ mod tests {
         let (env, admin, oracle, verifier) = setup();
         let contract_id = env.register_contract(None, CarbonRegistryContract);
         let client = CarbonRegistryContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]);
+        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]).unwrap();
 
         register(&env, &client, &admin);
         client.verify_project(&verifier, &make_str(&env, "proj-001")).unwrap();
@@ -415,7 +465,7 @@ mod tests {
         let (env, admin, oracle, verifier) = setup();
         let contract_id = env.register_contract(None, CarbonRegistryContract);
         let client = CarbonRegistryContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]);
+        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]).unwrap();
 
         register(&env, &client, &admin);
         let rogue = Address::generate(&env);
@@ -428,7 +478,7 @@ mod tests {
         let (env, admin, oracle, verifier) = setup();
         let contract_id = env.register_contract(None, CarbonRegistryContract);
         let client = CarbonRegistryContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]);
+        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]).unwrap();
 
         register(&env, &client, &admin);
         client.reject_project(&verifier, &make_str(&env, "proj-001"), &make_str(&env, "fraud")).unwrap();
@@ -441,7 +491,7 @@ mod tests {
         let (env, admin, oracle, verifier) = setup();
         let contract_id = env.register_contract(None, CarbonRegistryContract);
         let client = CarbonRegistryContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]);
+        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]).unwrap();
 
         register(&env, &client, &admin);
         client.update_project_status(&oracle, &make_str(&env, "proj-001"), &ProjectStatus::Completed).unwrap();
@@ -454,7 +504,7 @@ mod tests {
         let (env, admin, oracle, verifier) = setup();
         let contract_id = env.register_contract(None, CarbonRegistryContract);
         let client = CarbonRegistryContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]);
+        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]).unwrap();
 
         register(&env, &client, &admin);
         client.suspend_project(&admin, &make_str(&env, "proj-001"), &make_str(&env, "investigation")).unwrap();
@@ -467,12 +517,26 @@ mod tests {
         let (env, admin, oracle, verifier) = setup();
         let contract_id = env.register_contract(None, CarbonRegistryContract);
         let client = CarbonRegistryContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]);
+        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]).unwrap();
 
         register(&env, &client, &admin);
         let p = client.get_project(&make_str(&env, "proj-001")).unwrap();
         assert_eq!(p.project_id, make_str(&env, "proj-001"));
         assert_eq!(p.country, make_str(&env, "Brazil"));
         assert_eq!(p.total_credits_issued, 0);
+    }
+
+    #[test]
+    fn test_initialize_twice_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin    = Address::generate(&env);
+        let oracle   = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        let contract_id = env.register_contract(None, CarbonRegistryContract);
+        let client = CarbonRegistryContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]).unwrap();
+        let result = client.try_initialize(&admin, &oracle, &vec![&env, verifier.clone()]);
+        assert!(result.is_err());
     }
 }
