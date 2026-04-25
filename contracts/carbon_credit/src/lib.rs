@@ -91,6 +91,9 @@ pub struct RetirementCertificate {
     pub serial_numbers:   Vec<u64>,
     pub retired_at:       u64,
     pub tx_hash:          String,
+    /// IPFS Content Identifier (CID) for certificate PDF stored on IPFS
+    /// Used to verify content integrity on retrieval - detect tampering
+    pub certificate_cid:  String,
 }
 
 /// Compact serial range stored globally to detect overlaps.
@@ -237,6 +240,7 @@ impl CarbonCreditContract {
         beneficiary: String,
         retirement_id: String,
         tx_hash: String,
+        certificate_cid: String,
     ) -> Result<RetirementCertificate, CarbonError> {
         // ── checks ────────────────────────────────────────────────────────────
         holder.require_auth();
@@ -310,6 +314,7 @@ impl CarbonCreditContract {
             serial_numbers:    serial_numbers.clone(),
             retired_at:        env.ledger().timestamp(),
             tx_hash:           tx_hash.clone(),
+            certificate_cid:   certificate_cid.clone(),
         };
         env.storage().persistent().set(&DataKey::Retirement(retirement_id.clone()), &cert);
 
@@ -645,6 +650,7 @@ mod tests {
             &s(&env, "Acme Corp"),
             &s(&env, "ret-001"),
             &s(&env, "txhash123"),
+            &s(&env, "QmCertificateCID"),
         ).unwrap();
 
         assert_eq!(cert.amount, 100);
@@ -664,7 +670,7 @@ mod tests {
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
 
         client.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner).unwrap();
-        client.retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx")).unwrap();
+        client.retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx"), &s(&env, "QmCID")).unwrap();
 
         let to = Address::generate(&env);
         let result = client.try_transfer_credits(&owner, &to, &s(&env, "b1"), &10_i128);
@@ -683,9 +689,9 @@ mod tests {
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
 
         client.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner).unwrap();
-        client.retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx")).unwrap();
+        client.retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx"), &s(&env, "QmCID")).unwrap();
 
-        let result = client.try_retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-002"), &s(&env, "tx2"));
+        let result = client.try_retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-002"), &s(&env, "tx2"), &s(&env, "QmCID2"));
         assert!(result.is_err());
     }
 
@@ -701,7 +707,7 @@ mod tests {
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
 
         client.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner).unwrap();
-        client.retire_credits(&owner, &s(&env, "b1"), &40_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx")).unwrap();
+        client.retire_credits(&owner, &s(&env, "b1"), &40_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx"), &s(&env, "QmCID")).unwrap();
 
         let batch = client.get_credit_batch(&s(&env, "b1")).unwrap();
         assert_eq!(batch.status, CreditStatus::PartiallyRetired);
@@ -719,7 +725,7 @@ mod tests {
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
 
         client.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner).unwrap();
-        client.retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx")).unwrap();
+        client.retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx"), &s(&env, "QmCID")).unwrap();
 
         let cert = client.get_retirement_certificate(&s(&env, "ret-001")).unwrap();
         assert_eq!(cert.amount, 100);

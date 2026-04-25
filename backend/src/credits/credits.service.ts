@@ -2,10 +2,14 @@ import { Injectable, NotFoundException, BadRequestException } from "@nestjs/comm
 import { PrismaService } from "../prisma.service";
 import { MintCreditsDto, RetireCreditsDto } from "./credits.dto";
 import { randomBytes } from "crypto";
+import { IpfsService } from "../common/ipfs.service";
 
 @Injectable()
 export class CreditsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly ipfsService: IpfsService,
+  ) {}
 
   async mintCredits(dto: MintCreditsDto) {
     const existing = await this.prisma.creditBatch.findUnique({ where: { batchId: dto.batchId } });
@@ -41,7 +45,23 @@ export class CreditsService {
     const serialStart  = Number(batch.serialStart);
     const serialNumbers = Array.from({ length: dto.amount }, (_, i) => String(serialStart + i));
 
-    // Create retirement record
+    // Generate certificate data and compute IPFS CID for content integrity verification
+    const certificateData = {
+      retirementId,
+      batchId: dto.batchId,
+      projectId: batch.projectId,
+      amount: dto.amount,
+      retiredBy: dto.holderPublicKey,
+      beneficiary: dto.beneficiary,
+      retirementReason: dto.retirementReason,
+      vintageYear: batch.vintageYear,
+      serialNumbers,
+      timestamp: Date.now(),
+    };
+    const certificateJson = JSON.stringify(certificateData);
+    const certificateCid = this.ipfsService.generateCid(certificateJson);
+
+    // Create retirement record with CID for integrity verification
     const retirement = await this.prisma.retirementRecord.create({
       data: {
         retirementId,
@@ -54,6 +74,8 @@ export class CreditsService {
         vintageYear:      batch.vintageYear,
         serialNumbers,
         txHash:           randomBytes(32).toString("hex"), // In production: actual Stellar tx hash
+        certificateCid:   certificateCid, // Store CID for on-chain and off-chain verification
+        isValid:          true,
       },
     });
 

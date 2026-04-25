@@ -72,6 +72,9 @@ model RetirementRecord {
   vintageYear      Int
   serialNumbers    String[]
   txHash           String
+  certificateCid   String?  // IPFS CID for certificate content integrity verification
+  isValid          Boolean  @default(true)  // Invalid if CID mismatch detected
+  validatedAt      DateTime? // Last validation timestamp
   retiredAt        DateTime @default(now())
 
   batch   CreditBatch   @relation(fields: [batchId], references: [batchId])
