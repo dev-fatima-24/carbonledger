@@ -242,6 +242,14 @@ impl CarbonMarketplaceContract {
     /// Purchase credits from a listing. Transfers USDC from buyer to seller.
     /// Protocol fee of 1% is retained by the admin.
     ///
+    /// # CEI Compliance
+    /// CHECKS:   require_auth, zero-amount guard, listing existence, suspended-project
+    ///           guard, liquidity guard — all before any state mutation.
+    /// EFFECTS:  listing.amount_available decremented, listing.status updated, and
+    ///           storage written before any external token call.
+    /// INTERACTIONS: token::Client::transfer() called only after all state is finalised.
+    /// Reentrancy risk is eliminated because the listing state is fully committed to
+    /// persistent storage before the USDC token contract is invoked.
     /// # Parameters
     /// - `buyer`: The buyer's address
     /// - `listing_id`: The listing identifier to purchase from
@@ -333,11 +341,6 @@ impl CarbonMarketplaceContract {
     ///
     /// # Errors
     /// - Any error from individual [`purchase_credits`] calls propagates immediately.
-    // AUDIT-NOTE [MEDIUM]: Atomicity depends entirely on Soroban transaction semantics.
-    // If any iteration fails after earlier USDC transfers have been submitted, the
-    // Soroban runtime must revert the entire transaction for this to be safe. Auditors
-    // should verify that a mid-loop CarbonError return causes a full transaction revert
-    // including all token::Client::transfer() calls made in prior iterations.
     pub fn bulk_purchase(
         env: Env,
         buyer: Address,
