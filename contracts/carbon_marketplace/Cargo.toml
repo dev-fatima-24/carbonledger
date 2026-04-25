@@ -11,7 +11,7 @@ soroban-sdk = { version = "20.0.0", features = ["alloc"] }
 
 [dev-dependencies]
 soroban-sdk = { version = "20.0.0", features = ["testutils", "alloc"] }
-proptest = { version = "1.4.0", default-features = false, features = ["std"] }
+carbon_credit = { path = "../carbon_credit", features = ["testutils"] }
 
 [profile.release]
 opt-level = "z"
