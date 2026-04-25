@@ -1,25 +1,25 @@
 import { Injectable } from "@nestjs/common";
 import { PrismaService } from "../prisma.service";
-import { IsString, IsInt, IsPositive } from "class-validator";
+import { IsString, IsInt, IsPositive, Min, Max, Length } from "class-validator";
 import { Type } from "class-transformer";
 
 export class SubmitMonitoringDto {
-  @IsString() projectId: string;
-  @IsString() period: string;
+  @IsString() @Length(1, 64) projectId: string;
+  @IsString() @Length(1, 32) period: string;
   @IsInt() @IsPositive() @Type(() => Number) tonnesVerified: number;
-  @IsInt() @Type(() => Number) methodologyScore: number;
-  @IsString() satelliteCid: string;
+  @IsInt() @Min(0) @Max(100) @Type(() => Number) methodologyScore: number;
+  @IsString() @Length(1, 128) satelliteCid: string;
   @IsString() submittedBy: string;
 }
 
 export class UpdatePriceDto {
-  @IsString() methodology: string;
-  @IsInt() @Type(() => Number) vintageYear: number;
+  @IsString() @Length(1, 64) methodology: string;
+  @IsInt() @Min(1990) @Max(2027) @Type(() => Number) vintageYear: number;
   @IsString() priceUsdc: string;
 }
 
 export class FlagProjectDto {
-  @IsString() projectId: string;
+  @IsString() @Length(1, 64) projectId: string;
   @IsString() reason: string;
 }
 

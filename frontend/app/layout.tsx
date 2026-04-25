@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 
+
+
 export const metadata: Metadata = {
   title: "CarbonLedger — Verified Carbon Credits on Stellar",
   description: "Buy and retire verified carbon credits with full on-chain provenance. Every retirement is permanent and publicly verifiable.",

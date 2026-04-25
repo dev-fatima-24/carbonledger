@@ -1,7 +1,7 @@
 import { Controller, Get, Post, Patch, Param, Body, Query, UseGuards } from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
 import { ProjectsService } from "./projects.service";
-import { RegisterProjectDto, UpdateProjectStatusDto } from "./projects.dto";
+import { RegisterProjectDto, UpdateProjectStatusDto, SearchProjectsDto } from "./projects.dto";
 import { IsString, IsOptional } from "class-validator";
 
 class VerifyDto { @IsString() verifierPublicKey: string; }
@@ -16,12 +16,21 @@ export class ProjectsController {
     @Query("methodology") methodology?: string,
     @Query("country")     country?: string,
     @Query("vintage")     vintage?: string,
+    @Query("cursor")      cursor?: string,
+    @Query("limit")       limit?: string,
   ) {
     return this.projectsService.findAll({
       methodology,
       country,
       vintage: vintage ? Number(vintage) : undefined,
+      cursor,
+      limit: limit ? Number(limit) : 20,
     });
+  }
+
+  @Get("search")
+  searchProjects(@Query() searchDto: SearchProjectsDto) {
+    return this.projectsService.searchProjects(searchDto);
   }
 
   @Get(":id")
