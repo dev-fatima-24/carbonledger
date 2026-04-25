@@ -30,6 +30,7 @@ pub enum CarbonError {
     ZeroAmountNotAllowed   = 16,
     ProjectAlreadyExists   = 17,
     InvalidSerialRange     = 18,
+    AlreadyInitialized     = 19,
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -75,10 +76,15 @@ pub struct CarbonOracleContract;
 impl CarbonOracleContract {
 
     /// Initialise oracle with admin and authorised oracle signer address.
-    pub fn initialize(env: Env, admin: Address, oracle_address: Address) {
+    /// Can only be called once — subsequent calls return [`CarbonError::AlreadyInitialized`].
+    pub fn initialize(env: Env, admin: Address, oracle_address: Address) -> Result<(), CarbonError> {
+        if env.storage().persistent().has(&DataKey::Admin) {
+            return Err(CarbonError::AlreadyInitialized);
+        }
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::OracleAddress, &oracle_address);
+        Ok(())
     }
 
     /// Authorised oracle submits satellite-verified monitoring data for a project period.
@@ -271,7 +277,7 @@ mod tests {
         let oracle = Address::generate(env);
         let id     = env.register_contract(None, CarbonOracleContract);
         let client = CarbonOracleContractClient::new(env, &id);
-        client.initialize(&admin, &oracle);
+        client.initialize(&admin, &oracle).unwrap();
         (client, admin, oracle)
     }
 
@@ -394,5 +400,18 @@ mod tests {
         ).unwrap();
 
         assert!(client.is_monitoring_current(&s(&env, "proj-001")));
+    }
+
+    #[test]
+    fn test_initialize_twice_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin  = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let id     = env.register_contract(None, CarbonOracleContract);
+        let client = CarbonOracleContractClient::new(&env, &id);
+        client.initialize(&admin, &oracle).unwrap();
+        let result = client.try_initialize(&admin, &oracle);
+        assert!(result.is_err());
     }
 }

@@ -120,18 +120,18 @@ model User {
   createdAt DateTime @default(now())
 }
 
-model VerifierApplication {
-  id               String    @id @default(cuid())
-  publicKey        String    @unique
-  organizationName String
-  accreditationBody String
-  accreditationId  String
-  contactEmail     String
-  documentsCid     String
-  status           String    @default("pending")
-  rejectionReason  String?
-  approvedBy       String?
-  approvedAt       DateTime?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+model Job {
+  id          String    @id @default(cuid())
+  queue       String
+  type        String
+  payload     Json
+  status      String    @default("waiting")  // waiting | active | completed | failed | dead
+  attempts    Int       @default(0)
+  result      Json?
+  error       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([queue, status])
+  @@index([type])
 }

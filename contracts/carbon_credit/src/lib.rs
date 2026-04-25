@@ -30,6 +30,7 @@ pub enum CarbonError {
     ZeroAmountNotAllowed   = 16,
     ProjectAlreadyExists   = 17,
     InvalidSerialRange     = 18,
+    AlreadyInitialized     = 19,
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -110,12 +111,17 @@ pub struct CarbonCreditContract;
 impl CarbonCreditContract {
 
     /// Initialise with admin address.
-    pub fn initialize(env: Env, admin: Address, registry_contract: Address) {
+    /// Can only be called once — subsequent calls return [`CarbonError::AlreadyInitialized`].
+    pub fn initialize(env: Env, admin: Address, registry_contract: Address) -> Result<(), CarbonError> {
+        if env.storage().persistent().has(&DataKey::Admin) {
+            return Err(CarbonError::AlreadyInitialized);
+        }
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::RegistryContract, &registry_contract);
         let ranges: Vec<SerialRange> = vec![&env];
         env.storage().persistent().set(&DataKey::SerialRegistry, &ranges);
+        Ok(())
     }
 
     /// Mint verified carbon credits for a verified project. Assigns unique serial
@@ -435,7 +441,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let client = CarbonCreditContractClient::new(&env, &id);
-        client.initialize(&admin, &registry);
+        client.initialize(&admin, &registry).unwrap();
         (env, client)
     }
 
@@ -461,7 +467,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(
             &admin,
@@ -486,7 +492,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
         // Overlapping range 50-150 should fail
@@ -501,7 +507,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
         // Non-overlapping range should return true
@@ -517,7 +523,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
 
@@ -546,7 +552,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
 
@@ -565,7 +571,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
 
@@ -583,7 +589,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
 
@@ -601,7 +607,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
 
@@ -620,9 +626,22 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         let result = c.try_mint_credits(&admin, &s(&env, "p1"), &0_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_initialize_twice_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin    = Address::generate(&env);
+        let registry = Address::generate(&env);
+        let id = env.register_contract(None, CarbonCreditContract);
+        let c = CarbonCreditContractClient::new(&env, &id);
+        c.initialize(&admin, &registry).unwrap();
+        let result = c.try_initialize(&admin, &registry);
         assert!(result.is_err());
     }
 }
