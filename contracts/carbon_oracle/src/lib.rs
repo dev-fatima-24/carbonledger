@@ -40,6 +40,13 @@ const MONITORING_FRESHNESS_SECS: u64 = 365 * 24 * 60 * 60;
 /// 24 hours in ledger TTL units (each ledger ~5 s → 17_280 ledgers/day).
 const PRICE_CACHE_TTL_LEDGERS: u32 = 17_280;
 
+/// Returns the current year based on the ledger timestamp.
+fn current_year(env: &Env) -> u32 {
+    let seconds_per_year: u64 = 31557600; // Approximate seconds in a year
+    let timestamp = env.ledger().timestamp();
+    1970 + (timestamp / seconds_per_year) as u32
+}
+
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -52,6 +59,152 @@ pub enum DataKey {
     OracleAddress,
     Admin,
 }
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MonitoringData {
+    pub project_id:        String,
+    pub period:            String,
+    pub tonnes_verified:   i128,
+    pub methodology_score: u32,
+    pub satellite_cid:     String,
+    pub submitted_by:      Address,
+    pub submitted_at:      u64,
+}
+
+// ── Contract ──────────────────────────────────────────────────────────────────
+
+#[contract]
+pub struct CarbonOracleContract;
+
+#[contractimpl]
+impl CarbonOracleContract {
+    /// Initialise oracle with admin and authorised oracle signer address.
+    pub fn initialize(env: Env, admin: Address, oracle_address: Address) {
+        admin.require_auth();
+        env.storage().persistent().set(&DataKey::Admin, &admin);
+        env.storage().persistent().set(&DataKey::OracleAddress, &oracle_address);
+    }
+
+    /// Authorised oracle submits satellite-verified monitoring data for a project period.
+    /// Methodology score below 70 triggers an on-chain warning event.
+    ///
+    /// # Errors
+    /// - [`CarbonError::UnauthorizedOracle`] if caller is not the registered oracle.
+    /// - [`CarbonError::ZeroAmountNotAllowed`] if `tonnes_verified` is zero.
+    /// - [`CarbonError::ProjectNotFound`] if any string input is empty or too long.
+    /// - [`CarbonError::InvalidVintageYear`] if methodology score is not in 0-100 range.
+    pub fn submit_monitoring_data(
+        env: Env,
+        oracle_signer: Address,
+        project_id: String,
+        period: String,
+        tonnes_verified: i128,
+        methodology_score: u32,
+        satellite_cid: String,
+    ) -> Result<(), CarbonError> {
+        // ── checks ────────────────────────────────────────────────────────────
+        oracle_signer.require_auth();
+        Self::require_oracle(&env, &oracle_signer)?;
+
+        // Validate string inputs (non-empty and reasonable length)
+        if project_id.is_empty() || project_id.chars().count() > 64 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+        if period.is_empty() || period.chars().count() > 32 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+        if satellite_cid.is_empty() || satellite_cid.chars().count() > 128 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+
+        // Validate numeric inputs
+        if tonnes_verified <= 0 {
+            return Err(CarbonError::ZeroAmountNotAllowed);
+        }
+        if methodology_score > 100 {
+            return Err(CarbonError::InvalidVintageYear); // Reusing error for score validation
+        }
+
+        // ── effects ───────────────────────────────────────────────────────────
+        let now = env.ledger().timestamp();
+        let data = MonitoringData {
+            project_id:        project_id.clone(),
+            period:            period.clone(),
+            tonnes_verified,
+            methodology_score,
+            satellite_cid:     satellite_cid.clone(),
+            submitted_by:      oracle_signer.clone(),
+            submitted_at:      now,
+        };
+
+        env.storage().persistent().set(
+            &DataKey::MonitoringData(project_id.clone(), period.clone()),
+            &data,
+        );
+        // Track latest submission timestamp for freshness checks
+        env.storage().persistent().set(&DataKey::LatestMonitoring(project_id.clone()), &now);
+
+        if methodology_score < 70 {
+            env.events().publish(
+                (symbol_short!("c_ledger"), symbol_short!("low_score")),
+                (project_id.clone(), methodology_score),
+            );
+        }
+
+        env.events().publish(
+            (symbol_short!("c_ledger"), symbol_short!("mon_data")),
+            (project_id, period, tonnes_verified, methodology_score),
+        );
+        Ok(())
+    }
+
+    /// Push updated benchmark price per methodology and vintage year.
+    /// Stored in temporary storage with 24-hour TTL.
+    ///
+    /// # Errors
+    /// - [`CarbonError::UnauthorizedOracle`] if caller is not the registered oracle.
+    /// - [`CarbonError::ProjectNotFound`] if any string input is empty or too long.
+    /// - [`CarbonError::InvalidVintageYear`] if vintage year is before 1990 or after current year + 1.
+    pub fn update_credit_price(
+        env: Env,
+        oracle_signer: Address,
+        methodology: String,
+        vintage_year: u32,
+        price_usdc: i128,
+    ) -> Result<(), CarbonError> {
+        // ── checks ────────────────────────────────────────────────────────────
+        oracle_signer.require_auth();
+        Self::require_oracle(&env, &oracle_signer)?;
+
+        // Validate string inputs
+        if methodology.is_empty() || methodology.chars().count() > 64 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+
+        // Validate numeric inputs
+        if price_usdc <= 0 {
+            return Err(CarbonError::ZeroAmountNotAllowed);
+        }
+
+        let current_year = Self::current_year(&env);
+        if vintage_year < 1990 || vintage_year > current_year + 1 {
+            return Err(CarbonError::InvalidVintageYear);
+        }
+
+        // ── effects ───────────────────────────────────────────────────────────
+        let key = DataKey::BenchmarkPrice(methodology.clone(), vintage_year);
+        env.storage().temporary().set(&key, &price_usdc);
+        env.storage().temporary().extend_ttl(&key, PRICE_CACHE_TTL_LEDGERS, PRICE_CACHE_TTL_LEDGERS);
+
+        env.events().publish(
+            (symbol_short!("c_ledger"), symbol_short!("price_upd")),
+            (methodology, vintage_year, price_usdc),
+        );
+        Ok(())
+    }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -163,6 +316,12 @@ impl CarbonOracleContract {
             return Err(CarbonError::ZeroAmountNotAllowed);
         }
 
+        // Enforce vintage year range: 1990 to current_year + 1
+        let current_year = Self::get_current_year(&env);
+        if vintage_year < 1990 || vintage_year > current_year + 1 {
+            return Err(CarbonError::InvalidVintageYear);
+        }
+
         // ── effects ───────────────────────────────────────────────────────────
         // AUDIT-NOTE [LOW]: No price deviation guard. A single oracle update can move
         // the benchmark price by any amount. The README specifies a 15% alert threshold
@@ -269,6 +428,24 @@ impl CarbonOracleContract {
             return Err(CarbonError::UnauthorizedOracle);
         }
         Ok(())
+    }
+
+    fn get_current_year(env: &Env) -> u32 {
+        let timestamp = env.ledger().timestamp();
+        let seconds_in_day = 86400;
+        let mut days = (timestamp / seconds_in_day) as i64;
+        let mut year = 1970;
+
+        loop {
+            let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+            let days_in_year = if is_leap { 366 } else { 365 };
+            if days < days_in_year {
+                break;
+            }
+            days -= days_in_year;
+            year += 1;
+        }
+        year as u32
     }
 }
 

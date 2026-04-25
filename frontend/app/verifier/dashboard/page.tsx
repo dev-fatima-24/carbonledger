@@ -10,6 +10,7 @@ interface Project {
   methodology: string;
   country: string;
   status: string;
+  methodologyScore: number;
   createdAt: string;
 }
 
@@ -81,7 +82,7 @@ export default function VerifierDashboardPage() {
           <div>
             <strong>{p.name}</strong> <span style={{ color: "#666" }}>({p.projectId})</span>
             <br />
-            <small>{p.methodology} · {p.country} · submitted {new Date(p.createdAt).toLocaleDateString()}</small>
+            <small>{p.methodology} (Score: {p.methodologyScore}) · {p.country} · submitted {new Date(p.createdAt).toLocaleDateString()}</small>
           </div>
           <div style={{ display: "flex", gap: "0.5rem" }}>
             <button onClick={() => reviewProject(p.id, "verify")} style={approveBtn}>Approve</button>

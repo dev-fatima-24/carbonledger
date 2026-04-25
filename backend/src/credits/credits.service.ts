@@ -1,6 +1,8 @@
 import { Injectable, NotFoundException, BadRequestException } from "@nestjs/common";
 import { PrismaService } from "../prisma.service";
 import { MintCreditsDto, RetireCreditsDto } from "./credits.dto";
+import { MailService } from "../mail/mail.service";
+import { MailEvent } from "../mail/mail.constants";
 import { randomBytes } from "crypto";
 import { IpfsService } from "../common/ipfs.service";
 
@@ -8,7 +10,7 @@ import { IpfsService } from "../common/ipfs.service";
 export class CreditsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly ipfsService: IpfsService,
+    private readonly mailService: MailService,
   ) {}
 
   async mintCredits(dto: MintCreditsDto) {
@@ -25,7 +27,21 @@ export class CreditsService {
     });
     if (overlap) throw new BadRequestException("Serial number range overlaps existing batch — double counting prevented");
 
-    return this.prisma.creditBatch.create({ data: dto });
+    const batch = await this.prisma.creditBatch.create({ data: dto });
+
+    // Notify project owner
+    const project = await this.prisma.carbonProject.findUnique({ where: { projectId: dto.projectId } });
+    const owner = await this.prisma.user.findUnique({ where: { publicKey: project?.ownerAddress || '' } });
+    if (owner && owner.email && owner.isSubscribed) {
+      await this.mailService.sendEmail(owner.email, MailEvent.CREDITS_MINTED, {
+        batchId: batch.batchId,
+        amount: batch.amount,
+        vintageYear: batch.vintageYear,
+        to: owner.email,
+      });
+    }
+
+    return batch;
   }
 
   async getBatch(batchId: string) {
@@ -91,6 +107,17 @@ export class CreditsService {
       where: { projectId: batch.projectId },
       data:  { totalCreditsRetired: { increment: dto.amount } },
     });
+
+    // Notify beneficiary/holder
+    const holder = await this.prisma.user.findUnique({ where: { publicKey: dto.holderPublicKey } });
+    if (holder && holder.email && holder.isSubscribed) {
+      await this.mailService.sendEmail(holder.email, MailEvent.RETIREMENT_CONFIRMED, {
+        retirementId: retirement.retirementId,
+        beneficiary: retirement.beneficiary,
+        amount: retirement.amount,
+        to: holder.email,
+      });
+    }
 
     return retirement;
   }
