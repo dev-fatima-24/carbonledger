@@ -1,7 +1,7 @@
 import { Controller, Get, Post, Patch, Param, Body, Query, UseGuards } from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
 import { ProjectsService } from "./projects.service";
-import { RegisterProjectDto, UpdateProjectStatusDto } from "./projects.dto";
+import { RegisterProjectDto, UpdateProjectStatusDto, SearchProjectsDto } from "./projects.dto";
 import { IsString, IsOptional } from "class-validator";
 
 class VerifyDto { @IsString() verifierPublicKey: string; }
@@ -22,6 +22,11 @@ export class ProjectsController {
       country,
       vintage: vintage ? Number(vintage) : undefined,
     });
+  }
+
+  @Get("search")
+  searchProjects(@Query() searchDto: SearchProjectsDto) {
+    return this.projectsService.searchProjects(searchDto);
   }
 
   @Get(":id")
