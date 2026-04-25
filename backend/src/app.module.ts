@@ -17,6 +17,8 @@ import { PrismaService } from "./prisma.service";
 
 @Controller("health")
 class HealthController {
+  constructor(private readonly prisma: PrismaService) {}
+
   @Get()
   check() {
     return {
@@ -24,6 +26,11 @@ class HealthController {
       stellar_network: process.env.STELLAR_NETWORK || "testnet",
       timestamp: new Date().toISOString(),
     };
+  }
+
+  @Get("pool")
+  pool() {
+    return this.prisma.getPoolMetrics();
   }
 }
 
@@ -44,9 +51,7 @@ class HealthController {
     OracleModule,
     StatsModule,
     QueueModule,
-    AuditModule,
-    MailModule,
-    ExportModule,
+    UploadsModule,
   ],
   controllers: [HealthController],
   providers: [
