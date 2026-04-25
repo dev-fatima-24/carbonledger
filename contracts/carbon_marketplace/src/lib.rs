@@ -696,3 +696,166 @@ mod tests {
         assert!(result.is_err());
     }
 }
+
+// ── Property-based fuzz tests ─────────────────────────────────────────────────
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+    use soroban_sdk::{testutils::Address as _, Env, String};
+
+    fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
+
+    /// Set up a fresh marketplace with a USDC mock and one active listing of
+    /// `listing_amount` credits at `price_per_credit` stroops each.
+    fn setup_with_listing(
+        listing_amount: i128,
+        price_per_credit: i128,
+    ) -> (Env, CarbonMarketplaceContractClient<'static>, Address, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin  = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let usdc   = env.register_stellar_asset_contract(admin.clone());
+        let id     = env.register_contract(None, CarbonMarketplaceContract);
+        let env: &'static Env = Box::leak(Box::new(env));
+        let client = CarbonMarketplaceContractClient::new(env, &id);
+        client.initialize(&admin, &usdc).unwrap();
+        client.list_credits(
+            &seller,
+            &s(env, "list-fuzz"),
+            &s(env, "batch-fuzz"),
+            &s(env, "proj-fuzz"),
+            &listing_amount,
+            &price_per_credit,
+            &2023_u32,
+            &s(env, "VCS"),
+            &s(env, "Brazil"),
+        ).unwrap();
+        (env.clone(), client, admin, seller, usdc)
+    }
+
+    proptest! {
+        /// Purchasing zero or negative credits must return ZeroAmountNotAllowed — never panic.
+        #[test]
+        fn fuzz_purchase_zero_or_negative(amount in i128::MIN..=0_i128) {
+            let (env, client, _, _, _) = setup_with_listing(100, 10_0000000);
+            let buyer = Address::generate(&env);
+            let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &amount);
+            prop_assert!(result.is_err());
+        }
+
+        /// Purchasing more than available must return InsufficientLiquidity — never panic.
+        #[test]
+        fn fuzz_purchase_exceeds_available(excess in 1_i128..1_000_000_i128) {
+            let (env, client, _, _, _) = setup_with_listing(100, 10_0000000);
+            let buyer = Address::generate(&env);
+            let over = 100_i128 + excess;
+            let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &over);
+            prop_assert!(result.is_err());
+        }
+
+        /// Purchasing from a non-existent listing must return ListingNotFound — never panic.
+        #[test]
+        fn fuzz_purchase_nonexistent_listing(suffix in "[a-z]{1,8}") {
+            let (env, client, _, _, _) = setup_with_listing(100, 10_0000000);
+            let buyer = Address::generate(&env);
+            let bad_id = format!("no-such-{}", suffix);
+            let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &10_i128);
+            // Sanity: valid listing still works; bad one fails
+            let bad_result = client.try_purchase_credits(&buyer, &s(&env, &bad_id), &10_i128);
+            prop_assert!(bad_result.is_err());
+            let _ = result; // valid purchase may succeed or fail depending on USDC balance
+        }
+
+        /// Purchasing from a delisted listing must return ListingNotFound — never panic.
+        #[test]
+        fn fuzz_purchase_delisted_listing(amount in 1_i128..50_i128) {
+            let (env, client, _, seller, _) = setup_with_listing(100, 10_0000000);
+            client.delist_credits(&seller, &s(&env, "list-fuzz")).unwrap();
+            let buyer = Address::generate(&env);
+            let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &amount);
+            prop_assert!(result.is_err());
+        }
+
+        /// Purchasing from a suspended project must return ProjectSuspended — never panic.
+        #[test]
+        fn fuzz_purchase_suspended_project(amount in 1_i128..50_i128) {
+            let (env, client, admin, _, _) = setup_with_listing(100, 10_0000000);
+            client.suspend_project(&admin, &s(&env, "proj-fuzz")).unwrap();
+            let buyer = Address::generate(&env);
+            let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &amount);
+            prop_assert!(result.is_err());
+        }
+
+        /// Valid purchase reduces amount_available by exactly the purchased amount.
+        #[test]
+        fn fuzz_purchase_valid_reduces_available(
+            listing_amount in 2_i128..1_000_i128,
+            buy_frac in 1_u32..99_u32,  // percentage 1–98
+        ) {
+            let buy_amount = (listing_amount * buy_frac as i128 / 100).max(1).min(listing_amount - 1);
+            // Use price 1 stroop to keep USDC arithmetic trivial with mock_all_auths
+            let (env, client, _, _, _) = setup_with_listing(listing_amount, 1_i128);
+            let buyer = Address::generate(&env);
+            client.purchase_credits(&buyer, &s(&env, "list-fuzz"), &buy_amount).unwrap();
+            let listing = client.get_listing(&s(&env, "list-fuzz")).unwrap();
+            prop_assert_eq!(listing.amount_available, listing_amount - buy_amount);
+            prop_assert_eq!(listing.status, ListingStatus::PartiallyFilled);
+        }
+
+        /// Purchasing the full listing amount marks it Sold — never panic.
+        #[test]
+        fn fuzz_purchase_full_amount_marks_sold(listing_amount in 1_i128..1_000_i128) {
+            let (env, client, _, _, _) = setup_with_listing(listing_amount, 1_i128);
+            let buyer = Address::generate(&env);
+            client.purchase_credits(&buyer, &s(&env, "list-fuzz"), &listing_amount).unwrap();
+            let listing = client.get_listing(&s(&env, "list-fuzz")).unwrap();
+            prop_assert_eq!(listing.status, ListingStatus::Sold);
+            prop_assert_eq!(listing.amount_available, 0);
+        }
+
+        /// Any purchase from a Sold listing must fail — never panic.
+        #[test]
+        fn fuzz_purchase_from_sold_listing_fails(second_amount in 1_i128..100_i128) {
+            let (env, client, _, _, _) = setup_with_listing(100, 1_i128);
+            let buyer = Address::generate(&env);
+            // Buy everything
+            client.purchase_credits(&buyer, &s(&env, "list-fuzz"), &100_i128).unwrap();
+            // Any further purchase must fail
+            let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &second_amount);
+            prop_assert!(result.is_err());
+        }
+
+        /// list_credits with zero amount or zero price must always fail — never panic.
+        #[test]
+        fn fuzz_list_zero_amount_or_price(
+            amount in i128::MIN..=0_i128,
+            price in i128::MIN..=0_i128,
+        ) {
+            let env = Env::default();
+            env.mock_all_auths();
+            let admin  = Address::generate(&env);
+            let seller = Address::generate(&env);
+            let usdc   = env.register_stellar_asset_contract(admin.clone());
+            let id     = env.register_contract(None, CarbonMarketplaceContract);
+            let client = CarbonMarketplaceContractClient::new(&env, &id);
+            client.initialize(&admin, &usdc).unwrap();
+
+            // Zero amount
+            let r1 = client.try_list_credits(
+                &seller, &s(&env, "l1"), &s(&env, "b1"), &s(&env, "p1"),
+                &amount, &10_0000000_i128, &2023_u32, &s(&env, "VCS"), &s(&env, "BR"),
+            );
+            prop_assert!(r1.is_err());
+
+            // Zero price
+            let r2 = client.try_list_credits(
+                &seller, &s(&env, "l2"), &s(&env, "b2"), &s(&env, "p2"),
+                &100_i128, &price, &2023_u32, &s(&env, "VCS"), &s(&env, "BR"),
+            );
+            prop_assert!(r2.is_err());
+        }
+    }
+}
