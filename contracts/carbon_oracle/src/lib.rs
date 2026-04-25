@@ -82,6 +82,10 @@ pub struct CarbonOracleContract;
 #[contractimpl]
 impl CarbonOracleContract {
     /// Initialise oracle with admin and authorised oracle signer address.
+    ///
+    /// # Parameters
+    /// - `admin`: The address that will have administrative privileges
+    /// - `oracle_address`: The address authorized to submit monitoring data and prices
     pub fn initialize(env: Env, admin: Address, oracle_address: Address) {
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
@@ -90,6 +94,14 @@ impl CarbonOracleContract {
 
     /// Authorised oracle submits satellite-verified monitoring data for a project period.
     /// Methodology score below 70 triggers an on-chain warning event.
+    ///
+    /// # Parameters
+    /// - `oracle_signer`: The oracle's address authorizing the submission
+    /// - `project_id`: The project identifier
+    /// - `period`: Monitoring period (e.g., "2023-Q1")
+    /// - `tonnes_verified`: Amount of carbon tonnes verified
+    /// - `methodology_score`: Quality score of the methodology (0-100)
+    /// - `satellite_cid`: IPFS CID of satellite verification data
     ///
     /// # Errors
     /// - [`CarbonError::UnauthorizedOracle`] if caller is not the registered oracle.
@@ -163,6 +175,12 @@ impl CarbonOracleContract {
 
     /// Push updated benchmark price per methodology and vintage year.
     /// Stored in temporary storage with 24-hour TTL.
+    ///
+    /// # Parameters
+    /// - `oracle_signer`: The oracle's address authorizing the update
+    /// - `methodology`: Carbon accounting methodology
+    /// - `vintage_year`: Year the credits were generated
+    /// - `price_usdc`: Price per credit in USDC stroops
     ///
     /// # Errors
     /// - [`CarbonError::UnauthorizedOracle`] if caller is not the registered oracle.
@@ -341,8 +359,15 @@ impl CarbonOracleContract {
 
     /// Returns monitoring data for a specific project and period.
     ///
+    /// # Parameters
+    /// - `project_id`: The project identifier
+    /// - `period`: Monitoring period
+    ///
+    /// # Returns
+    /// The monitoring data record
+    ///
     /// # Errors
-    /// - [`CarbonError::ProjectNotFound`] if no data exists for the given period.
+    /// - [`CarbonError::ProjectNotFound`] if no data exists for the given period
     pub fn get_monitoring_data(
         env: Env,
         project_id: String,
@@ -356,8 +381,15 @@ impl CarbonOracleContract {
 
     /// Returns the current benchmark price (in USDC stroops) for a methodology and vintage.
     ///
+    /// # Parameters
+    /// - `methodology`: Carbon accounting methodology
+    /// - `vintage_year`: Year the credits were generated
+    ///
+    /// # Returns
+    /// The benchmark price in USDC stroops
+    ///
     /// # Errors
-    /// - [`CarbonError::PriceNotSet`] if no price is cached or cache has expired.
+    /// - [`CarbonError::PriceNotSet`] if no price is cached or cache has expired
     pub fn get_benchmark_price(
         env: Env,
         methodology: String,
@@ -371,6 +403,11 @@ impl CarbonOracleContract {
 
     /// Flag a project for investigation. Emits an on-chain event that halts
     /// new credit issuance until the flag is resolved.
+    ///
+    /// # Parameters
+    /// - `oracle_signer`: The oracle's address authorizing the flag
+    /// - `project_id`: The project identifier to flag
+    /// - `reason`: Reason for flagging the project
     ///
     /// # Errors
     /// - [`CarbonError::UnauthorizedOracle`] if caller is not the registered oracle.
@@ -401,6 +438,12 @@ impl CarbonOracleContract {
 
     /// Returns `true` if monitoring data was submitted within the last 365 days.
     /// Returns `false` (stale) if no data exists or data is older than 365 days.
+    ///
+    /// # Parameters
+    /// - `project_id`: The project identifier
+    ///
+    /// # Returns
+    /// `true` if monitoring data is current, `false` if stale or missing
     pub fn is_monitoring_current(env: Env, project_id: String) -> bool {
         let latest: Option<u64> = env
             .storage()

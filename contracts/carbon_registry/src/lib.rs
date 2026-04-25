@@ -112,6 +112,17 @@ impl CarbonRegistryContract {
     /// Register a new carbon offset project. Status is set to `Pending` until a
     /// verifier calls [`verify_project`].
     ///
+    /// # Parameters
+    /// - `admin`: The admin address authorizing the registration
+    /// - `project_id`: Unique identifier for the project
+    /// - `name`: Human-readable project name
+    /// - `metadata_cid`: IPFS CID containing detailed project metadata
+    /// - `verifier_address`: Address of the accredited verifier for this project
+    /// - `methodology`: Carbon accounting methodology (e.g., "ACM0002")
+    /// - `country`: Country where the project is located
+    /// - `project_type`: Type of project (e.g., "REDD+", "Solar")
+    /// - `vintage_year`: Year the carbon credits were generated
+    ///
     /// # Errors
     /// - [`CarbonError::ProjectAlreadyExists`] if `project_id` is already registered.
     /// - [`CarbonError::InvalidVintageYear`] if `vintage_year` is before 1990 or after current year + 1.
@@ -197,6 +208,10 @@ impl CarbonRegistryContract {
     /// Approve a pending project for credit issuance. Caller must be an
     /// accredited verifier stored in `VERIFIED_VERIFIERS`.
     ///
+    /// # Parameters
+    /// - `verifier_address`: The verifier's address authorizing the approval
+    /// - `project_id`: The project identifier to verify
+    ///
     /// # Errors
     /// - [`CarbonError::UnauthorizedVerifier`] if caller is not a registered verifier.
     /// - [`CarbonError::ProjectNotFound`] if `project_id` does not exist.
@@ -227,9 +242,14 @@ impl CarbonRegistryContract {
 
     /// Permanently reject a fraudulent project. Rejection is irreversible.
     ///
+    /// # Parameters
+    /// - `verifier_address`: The verifier's address authorizing the rejection
+    /// - `project_id`: The project identifier to reject
+    /// - `reason`: Reason for rejection
+    ///
     /// # Errors
-    /// - [`CarbonError::UnauthorizedVerifier`] if caller is not a registered verifier.
-    /// - [`CarbonError::ProjectNotFound`] if `project_id` does not exist.
+    /// - [`CarbonError::UnauthorizedVerifier`] if caller is not a registered verifier
+    /// - [`CarbonError::ProjectNotFound`] if `project_id` does not exist
     pub fn reject_project(
         env: Env,
         verifier_address: Address,
@@ -255,9 +275,14 @@ impl CarbonRegistryContract {
 
     /// Oracle pushes updated monitoring status for a project.
     ///
+    /// # Parameters
+    /// - `oracle_address`: The oracle's address authorizing the update
+    /// - `project_id`: The project identifier
+    /// - `status`: New project status
+    ///
     /// # Errors
-    /// - [`CarbonError::UnauthorizedOracle`] if caller is not the registered oracle.
-    /// - [`CarbonError::ProjectNotFound`] if `project_id` does not exist.
+    /// - [`CarbonError::UnauthorizedOracle`] if caller is not the registered oracle
+    /// - [`CarbonError::ProjectNotFound`] if `project_id` does not exist
     pub fn update_project_status(
         env: Env,
         oracle_address: Address,
@@ -283,8 +308,14 @@ impl CarbonRegistryContract {
 
     /// Admin suspends a project under investigation, halting new credit issuance.
     ///
+    /// # Parameters
+    /// - `admin`: The admin address authorizing the suspension
+    /// - `project_id`: The project identifier to suspend
+    /// - `reason`: Reason for suspension
+    ///
     /// # Errors
-    /// - [`CarbonError::ProjectNotFound`] if `project_id` does not exist.
+    /// - [`CarbonError::ProjectNotFound`] if `project_id` does not exist
+    /// - [`CarbonError::UnauthorizedVerifier`] if caller is not the admin
     pub fn suspend_project(
         env: Env,
         admin: Address,
@@ -310,8 +341,14 @@ impl CarbonRegistryContract {
 
     /// Returns the full [`CarbonProject`] record.
     ///
+    /// # Parameters
+    /// - `project_id`: The project identifier
+    ///
+    /// # Returns
+    /// The complete project record
+    ///
     /// # Errors
-    /// - [`CarbonError::ProjectNotFound`] if `project_id` does not exist.
+    /// - [`CarbonError::ProjectNotFound`] if `project_id` does not exist
     pub fn get_project(env: Env, project_id: String) -> Result<CarbonProject, CarbonError> {
         Self::load_project(&env, &project_id)
     }
