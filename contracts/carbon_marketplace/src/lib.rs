@@ -7,6 +7,10 @@ use soroban_sdk::{
     token,
 };
 
+/// TTL extension in ledgers (~30 days at 5s/ledger).
+/// Cost: ~0.00001 XLM per ledger entry extended. See docs/ttl-cost.md.
+const TTL_LEDGERS: u32 = 518_400;
+
 // ── Error Enum ────────────────────────────────────────────────────────────────
 
 #[contracterror]
@@ -31,6 +35,7 @@ pub enum CarbonError {
     ZeroAmountNotAllowed   = 16,
     ProjectAlreadyExists   = 17,
     InvalidSerialRange     = 18,
+    AlreadyInitialized     = 19,
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -42,6 +47,7 @@ pub enum DataKey {
     AllListings,
     Admin,
     UsdcToken,
+    SuspendedProject(String),
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -80,18 +86,40 @@ pub struct CarbonMarketplaceContract;
 impl CarbonMarketplaceContract {
 
     /// Initialise marketplace with admin and USDC token contract address.
-    pub fn initialize(env: Env, admin: Address, usdc_token: Address) {
+    /// Can only be called once — subsequent calls return [`CarbonError::AlreadyInitialized`].
+    pub fn initialize(env: Env, admin: Address, usdc_token: Address) -> Result<(), CarbonError> {
+        if env.storage().persistent().has(&DataKey::Admin) {
+            return Err(CarbonError::AlreadyInitialized);
+        }
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::UsdcToken, &usdc_token);
         let listings: Vec<String> = vec![&env];
         env.storage().persistent().set(&DataKey::AllListings, &listings);
+        Ok(())
+    }
+
+    /// Mark a project as suspended in the marketplace. Only admin may call this.
+    /// Suspended projects cannot have new listings created or credits purchased.
+    pub fn suspend_project(env: Env, admin: Address, project_id: String) -> Result<(), CarbonError> {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().persistent().get(&DataKey::Admin).unwrap();
+        if stored_admin != admin {
+            return Err(CarbonError::UnauthorizedVerifier);
+        }
+        env.storage().persistent().set(&DataKey::SuspendedProject(project_id.clone()), &true);
+        env.events().publish(
+            (symbol_short!("c_ledger"), symbol_short!("mkt_susp")),
+            project_id,
+        );
+        Ok(())
     }
 
     /// List carbon credits for sale at a fixed USDC price per credit (in stroops).
     ///
     /// # Errors
     /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` or `price_per_credit_usdc` is zero.
+    /// - [`CarbonError::ProjectSuspended`] if the project is suspended.
     pub fn list_credits(
         env: Env,
         seller: Address,
@@ -107,8 +135,21 @@ impl CarbonMarketplaceContract {
         // ── checks ────────────────────────────────────────────────────────────
         seller.require_auth();
 
+        // AUDIT-NOTE [MEDIUM]: No deduplication check on listing_id. A duplicate
+        // listing_id silently overwrites the existing listing, allowing a seller to
+        // zero out another listing's amount_available or change its price.
+        // Fix: check `env.storage().persistent().has(&DataKey::Listing(listing_id.clone()))`.
+        //
+        // AUDIT-NOTE [MEDIUM]: No check that `seller` actually holds `batch_id` in
+        // carbon_credit. Any authenticated address can list any batch. Fix: cross-contract
+        // call to carbon_credit to verify ownership before creating the listing.
+
         if amount <= 0 || price_per_credit_usdc <= 0 {
             return Err(CarbonError::ZeroAmountNotAllowed);
+        }
+
+        if env.storage().persistent().get::<DataKey, bool>(&DataKey::SuspendedProject(project_id.clone())).unwrap_or(false) {
+            return Err(CarbonError::ProjectSuspended);
         }
 
         // ── effects ───────────────────────────────────────────────────────────
@@ -126,6 +167,7 @@ impl CarbonMarketplaceContract {
             status:           ListingStatus::Active,
         };
         env.storage().persistent().set(&DataKey::Listing(listing_id.clone()), &listing);
+        Self::extend_listing_ttl(&env, &listing_id);
 
         let mut all: Vec<String> = env
             .storage()
@@ -163,6 +205,7 @@ impl CarbonMarketplaceContract {
         // ── effects ───────────────────────────────────────────────────────────
         listing.status = ListingStatus::Delisted;
         env.storage().persistent().set(&DataKey::Listing(listing_id.clone()), &listing);
+        Self::extend_listing_ttl(&env, &listing_id);
 
         env.events().publish(
             (symbol_short!("c_ledger"), symbol_short!("delisted")),
@@ -195,11 +238,18 @@ impl CarbonMarketplaceContract {
         if listing.status == ListingStatus::Delisted || listing.status == ListingStatus::Sold {
             return Err(CarbonError::ListingNotFound);
         }
+        if env.storage().persistent().get::<DataKey, bool>(&DataKey::SuspendedProject(listing.project_id.clone())).unwrap_or(false) {
+            return Err(CarbonError::ProjectSuspended);
+        }
         if amount > listing.amount_available {
             return Err(CarbonError::InsufficientLiquidity);
         }
 
         // ── effects ───────────────────────────────────────────────────────────
+        // AUDIT-NOTE [HIGH]: Unchecked i128 multiplication. If price_per_credit and
+        // amount are both large (e.g., price = i128::MAX / 2, amount = 2), total_cost
+        // overflows and wraps to a small or negative value, allowing a buyer to purchase
+        // credits for near-zero USDC. Fix: use checked_mul and return an error on overflow.
         let total_cost = listing.price_per_credit * amount;
         let protocol_fee = total_cost / 100; // 1%
         let seller_proceeds = total_cost - protocol_fee;
@@ -211,6 +261,7 @@ impl CarbonMarketplaceContract {
             ListingStatus::PartiallyFilled
         };
         env.storage().persistent().set(&DataKey::Listing(listing_id.clone()), &listing);
+        Self::extend_listing_ttl(&env, &listing_id);
 
         // ── interactions ──────────────────────────────────────────────────────
         let usdc: Address = env.storage().persistent().get(&DataKey::UsdcToken).unwrap();
@@ -231,6 +282,11 @@ impl CarbonMarketplaceContract {
     ///
     /// # Errors
     /// - Any error from individual [`purchase_credits`] calls propagates immediately.
+    // AUDIT-NOTE [MEDIUM]: Atomicity depends entirely on Soroban transaction semantics.
+    // If any iteration fails after earlier USDC transfers have been submitted, the
+    // Soroban runtime must revert the entire transaction for this to be safe. Auditors
+    // should verify that a mid-loop CarbonError return causes a full transaction revert
+    // including all token::Client::transfer() calls made in prior iterations.
     pub fn bulk_purchase(
         env: Env,
         buyer: Address,
@@ -256,10 +312,15 @@ impl CarbonMarketplaceContract {
             if listing.status == ListingStatus::Delisted || listing.status == ListingStatus::Sold {
                 return Err(CarbonError::ListingNotFound);
             }
+            if env.storage().persistent().get::<DataKey, bool>(&DataKey::SuspendedProject(listing.project_id.clone())).unwrap_or(false) {
+                return Err(CarbonError::ProjectSuspended);
+            }
             if amount > listing.amount_available {
                 return Err(CarbonError::InsufficientLiquidity);
             }
 
+            // AUDIT-NOTE [HIGH]: Same unchecked i128 multiplication as purchase_credits.
+            // Fix: use checked_mul.
             let total_cost = listing.price_per_credit * amount;
             let protocol_fee = total_cost / 100;
             let seller_proceeds = total_cost - protocol_fee;
@@ -271,6 +332,7 @@ impl CarbonMarketplaceContract {
                 ListingStatus::PartiallyFilled
             };
             env.storage().persistent().set(&DataKey::Listing(listing_id.clone()), &listing);
+            Self::extend_listing_ttl(&env, &listing_id);
 
             let usdc: Address = env.storage().persistent().get(&DataKey::UsdcToken).unwrap();
             let usdc_client = token::Client::new(&env, &usdc);
@@ -311,11 +373,24 @@ impl CarbonMarketplaceContract {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
+    /// Extend TTL on a listing entry so it is not evicted by Soroban rent.
+    /// Called on every read/write to active listings.
+    fn extend_listing_ttl(env: &Env, listing_id: &String) {
+        let key = DataKey::Listing(listing_id.clone());
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+        }
+    }
+
     fn load_listing(env: &Env, listing_id: &String) -> Result<MarketListing, CarbonError> {
-        env.storage()
+        let key = DataKey::Listing(listing_id.clone());
+        let listing = env.storage()
             .persistent()
-            .get(&DataKey::Listing(listing_id.clone()))
-            .ok_or(CarbonError::ListingNotFound)
+            .get(&key)
+            .ok_or(CarbonError::ListingNotFound)?;
+        // Extend TTL on every read so active listings never expire
+        env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+        Ok(listing)
     }
 
     fn filter_listings<F: Fn(&MarketListing) -> bool>(env: &Env, predicate: F) -> Vec<MarketListing> {
@@ -356,7 +431,7 @@ mod tests {
         let usdc   = env.register_stellar_asset_contract(admin.clone());
         let id     = env.register_contract(None, CarbonMarketplaceContract);
         let client = CarbonMarketplaceContractClient::new(env, &id);
-        client.initialize(&admin, &usdc);
+        client.initialize(&admin, &usdc).unwrap();
         (client, admin, seller, usdc)
     }
 
@@ -449,5 +524,47 @@ mod tests {
             &s(&env, "Brazil"),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_suspended_project_listing_blocked() {
+        let env = Env::default();
+        let (client, admin, seller, _) = setup(&env);
+        client.suspend_project(&admin, &s(&env, "proj-001")).unwrap();
+        let result = client.try_list_credits(
+            &seller,
+            &s(&env, "list-001"),
+            &s(&env, "batch-001"),
+            &s(&env, "proj-001"),
+            &100_i128,
+            &10_0000000_i128,
+            &2023_u32,
+            &s(&env, "VCS"),
+            &s(&env, "Brazil"),
+        );
+        assert_eq!(result.unwrap_err().unwrap(), CarbonError::ProjectSuspended);
+    }
+
+    #[test]
+    fn test_suspended_project_purchase_blocked() {
+        let env = Env::default();
+        let (client, admin, seller, _) = setup(&env);
+        // List before suspending
+        add_listing(&env, &client, &seller);
+        // Suspend the project
+        client.suspend_project(&admin, &s(&env, "proj-001")).unwrap();
+        let buyer = Address::generate(&env);
+        let result = client.try_purchase_credits(&buyer, &s(&env, "list-001"), &10_i128);
+        assert_eq!(result.unwrap_err().unwrap(), CarbonError::ProjectSuspended);
+    }
+
+    #[test]
+    fn test_non_suspended_project_listing_succeeds() {
+        let env = Env::default();
+        let (client, _, seller, _) = setup(&env);
+        // No suspension — listing should succeed
+        add_listing(&env, &client, &seller);
+        let l = client.get_listing(&s(&env, "list-001")).unwrap();
+        assert_eq!(l.status, ListingStatus::Active);
     }
 }

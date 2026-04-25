@@ -1,4 +1,4 @@
-import { Module } from "@nestjs/common";
+import { Module, Controller, Get } from "@nestjs/common";
 import { BullModule } from "@nestjs/bullmq";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
@@ -14,6 +14,18 @@ import { StatsModule } from "./stats/stats.module";
 import { QueueModule } from "./queue/queue.module";
 import { PrismaService } from "./prisma.service";
 import Redis from "ioredis";
+
+@Controller("health")
+class HealthController {
+  @Get()
+  check() {
+    return {
+      status: "ok",
+      stellar_network: process.env.STELLAR_NETWORK || "testnet",
+      timestamp: new Date().toISOString(),
+    };
+  }
+}
 
 @Module({
   imports: [
@@ -61,6 +73,7 @@ import Redis from "ioredis";
     StatsModule,
     QueueModule,
   ],
+  controllers: [HealthController],
   providers: [
     PrismaService,
     {
