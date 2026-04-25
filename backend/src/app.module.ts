@@ -10,6 +10,18 @@ import { StatsModule } from "./stats/stats.module";
 import { QueueModule } from "./queue/queue.module";
 import { PrismaService } from "./prisma.service";
 
+@Controller("health")
+class HealthController {
+  @Get()
+  check() {
+    return {
+      status: "ok",
+      stellar_network: process.env.STELLAR_NETWORK || "testnet",
+      timestamp: new Date().toISOString(),
+    };
+  }
+}
+
 @Module({
   imports: [
     BullModule.forRoot({
@@ -28,6 +40,7 @@ import { PrismaService } from "./prisma.service";
     StatsModule,
     QueueModule,
   ],
+  controllers: [HealthController],
   providers: [PrismaService],
 })
 export class AppModule {}
