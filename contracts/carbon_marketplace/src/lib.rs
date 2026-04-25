@@ -80,6 +80,10 @@ pub struct CarbonMarketplaceContract;
 impl CarbonMarketplaceContract {
 
     /// Initialise marketplace with admin and USDC token contract address.
+    ///
+    /// # Parameters
+    /// - `admin`: The address that will have administrative privileges
+    /// - `usdc_token`: Address of the USDC token contract for payments
     pub fn initialize(env: Env, admin: Address, usdc_token: Address) {
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
@@ -90,8 +94,19 @@ impl CarbonMarketplaceContract {
 
     /// List carbon credits for sale at a fixed USDC price per credit (in stroops).
     ///
+    /// # Parameters
+    /// - `seller`: The address listing the credits for sale
+    /// - `listing_id`: Unique identifier for this listing
+    /// - `batch_id`: The credit batch identifier
+    /// - `project_id`: The project identifier
+    /// - `amount`: Number of credits to list
+    /// - `price_per_credit_usdc`: Price per credit in USDC stroops
+    /// - `vintage_year`: Year the credits were generated
+    /// - `methodology`: Carbon accounting methodology
+    /// - `country`: Country where the project is located
+    ///
     /// # Errors
-    /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` or `price_per_credit_usdc` is zero.
+    /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` or `price_per_credit_usdc` is zero
     pub fn list_credits(
         env: Env,
         seller: Address,
@@ -144,9 +159,13 @@ impl CarbonMarketplaceContract {
 
     /// Remove an active listing. Only the original seller may delist.
     ///
+    /// # Parameters
+    /// - `seller`: The seller's address
+    /// - `listing_id`: The listing identifier to remove
+    ///
     /// # Errors
-    /// - [`CarbonError::ListingNotFound`] if listing does not exist.
-    /// - [`CarbonError::UnauthorizedVerifier`] if caller is not the seller.
+    /// - [`CarbonError::ListingNotFound`] if listing does not exist
+    /// - [`CarbonError::UnauthorizedVerifier`] if caller is not the seller
     pub fn delist_credits(
         env: Env,
         seller: Address,
@@ -174,9 +193,15 @@ impl CarbonMarketplaceContract {
     /// Purchase credits from a listing. Transfers USDC from buyer to seller.
     /// Protocol fee of 1% is retained by the admin.
     ///
+    /// # Parameters
+    /// - `buyer`: The buyer's address
+    /// - `listing_id`: The listing identifier to purchase from
+    /// - `amount`: Number of credits to purchase
+    ///
     /// # Errors
-    /// - [`CarbonError::ListingNotFound`] if listing does not exist.
-    /// - [`CarbonError::InsufficientLiquidity`] if listing has fewer credits than requested.
+    /// - [`CarbonError::ListingNotFound`] if listing does not exist or is not active
+    /// - [`CarbonError::InsufficientLiquidity`] if listing has fewer credits than requested
+    /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` is zero
     pub fn purchase_credits(
         env: Env,
         buyer: Address,
@@ -229,8 +254,17 @@ impl CarbonMarketplaceContract {
 
     /// Bulk purchase from multiple listings in a single transaction.
     ///
+    /// # Parameters
+    /// - `buyer`: The buyer's address
+    /// - `listing_ids`: Vector of listing identifiers to purchase from
+    /// - `amounts`: Vector of amounts to purchase from each listing
+    ///
     /// # Errors
-    /// - Any error from individual [`purchase_credits`] calls propagates immediately.
+    /// - Any error from individual [`purchase_credits`] calls propagates immediately
+    /// - [`CarbonError::InvalidSerialRange`] if listing_ids and amounts have different lengths
+    /// - [`CarbonError::ZeroAmountNotAllowed`] if any amount is zero
+    /// - [`CarbonError::ListingNotFound`] if any listing does not exist or is not active
+    /// - [`CarbonError::InsufficientLiquidity`] if any listing has insufficient credits
     pub fn bulk_purchase(
         env: Env,
         buyer: Address,
@@ -288,11 +322,23 @@ impl CarbonMarketplaceContract {
     }
 
     /// Returns a single [`MarketListing`] by ID.
+    ///
+    /// # Parameters
+    /// - `listing_id`: The listing identifier
+    ///
+    /// # Returns
+    /// The market listing record
+    ///
+    /// # Errors
+    /// - [`CarbonError::ListingNotFound`] if listing does not exist
     pub fn get_listing(env: Env, listing_id: String) -> Result<MarketListing, CarbonError> {
         Self::load_listing(&env, &listing_id)
     }
 
     /// Returns all listings with `Active` or `PartiallyFilled` status.
+    ///
+    /// # Returns
+    /// Vector of all active market listings
     pub fn get_active_listings(env: Env) -> Vec<MarketListing> {
         Self::filter_listings(&env, |l| {
             l.status == ListingStatus::Active || l.status == ListingStatus::PartiallyFilled
@@ -300,11 +346,23 @@ impl CarbonMarketplaceContract {
     }
 
     /// Returns all listings for a given project ID.
+    ///
+    /// # Parameters
+    /// - `project_id`: The project identifier
+    ///
+    /// # Returns
+    /// Vector of all listings for the project
     pub fn get_listings_by_project(env: Env, project_id: String) -> Vec<MarketListing> {
         Self::filter_listings(&env, |l| l.project_id == project_id)
     }
 
     /// Returns all listings matching a given vintage year.
+    ///
+    /// # Parameters
+    /// - `vintage_year`: The vintage year to filter by
+    ///
+    /// # Returns
+    /// Vector of all listings for the vintage year
     pub fn get_listings_by_vintage(env: Env, vintage_year: u32) -> Vec<MarketListing> {
         Self::filter_listings(&env, |l| l.vintage_year == vintage_year)
     }

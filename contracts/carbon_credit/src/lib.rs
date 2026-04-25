@@ -110,6 +110,10 @@ pub struct CarbonCreditContract;
 impl CarbonCreditContract {
 
     /// Initialise with admin address.
+    ///
+    /// # Parameters
+    /// - `admin`: The address that will have administrative privileges for minting credits
+    /// - `registry_contract`: Address of the carbon registry contract
     pub fn initialize(env: Env, admin: Address, registry_contract: Address) {
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
@@ -121,11 +125,23 @@ impl CarbonCreditContract {
     /// Mint verified carbon credits for a verified project. Assigns unique serial
     /// numbers to each credit, preventing double-counting globally.
     ///
+    /// # Parameters
+    /// - `admin`: The admin address authorizing the minting
+    /// - `project_id`: The project identifier
+    /// - `amount`: Number of credits to mint
+    /// - `vintage_year`: Year the credits were generated
+    /// - `batch_id`: Unique identifier for this credit batch
+    /// - `serial_start`: Starting serial number for the batch
+    /// - `serial_end`: Ending serial number for the batch
+    /// - `metadata_cid`: IPFS CID containing batch metadata
+    ///
     /// # Errors
-    /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` is zero.
-    /// - [`CarbonError::InvalidSerialRange`] if `serial_end < serial_start`.
-    /// - [`CarbonError::SerialNumberConflict`] if serial range overlaps an existing batch.
-    /// - [`CarbonError::InvalidVintageYear`] if vintage year is out of range.
+    /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` is zero
+    /// - [`CarbonError::InvalidSerialRange`] if `serial_end < serial_start`
+    /// - [`CarbonError::SerialNumberConflict`] if serial range overlaps existing batch
+    /// - [`CarbonError::InvalidVintageYear`] if vintage year is out of range
+    /// - [`CarbonError::DoubleCountingDetected`] if serial range conflicts globally
+    /// - [`CarbonError::UnauthorizedVerifier`] if caller is not the admin
     pub fn mint_credits(
         env: Env,
         admin: Address,
@@ -202,10 +218,23 @@ impl CarbonCreditContract {
     /// are burned and can never be transferred or retired again under any circumstance.
     /// A permanent [`RetirementCertificate`] is recorded on-chain.
     ///
+    /// # Parameters
+    /// - `holder`: The address holding the credits to retire
+    /// - `batch_id`: The credit batch identifier
+    /// - `amount`: Number of credits to retire
+    /// - `retirement_reason`: Reason for retirement (e.g., "Corporate Offset")
+    /// - `beneficiary`: Name of the beneficiary
+    /// - `retirement_id`: Unique identifier for this retirement
+    /// - `tx_hash`: Transaction hash for off-chain verification
+    ///
+    /// # Returns
+    /// The retirement certificate record
+    ///
     /// # Errors
-    /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` is zero.
-    /// - [`CarbonError::InsufficientCredits`] if batch has fewer active credits than requested.
-    /// - [`CarbonError::AlreadyRetired`] if batch is fully retired.
+    /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` is zero
+    /// - [`CarbonError::InsufficientCredits`] if batch has fewer active credits than requested
+    /// - [`CarbonError::AlreadyRetired`] if batch is fully retired
+    /// - [`CarbonError::ProjectSuspended`] if batch is suspended
     pub fn retire_credits(
         env: Env,
         holder: Address,
@@ -292,9 +321,17 @@ impl CarbonCreditContract {
 
     /// Transfer credits between accounts. Retired batches cannot be transferred.
     ///
+    /// # Parameters
+    /// - `from`: The sender's address
+    /// - `to`: The recipient's address
+    /// - `batch_id`: The credit batch identifier
+    /// - `amount`: Number of credits to transfer
+    ///
     /// # Errors
-    /// - [`CarbonError::AlreadyRetired`] if batch is fully retired.
-    /// - [`CarbonError::InsufficientCredits`] if insufficient active credits.
+    /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` is zero
+    /// - [`CarbonError::AlreadyRetired`] if batch is fully retired
+    /// - [`CarbonError::ProjectSuspended`] if batch is suspended
+    /// - [`CarbonError::InsufficientCredits`] if insufficient active credits
     pub fn transfer_credits(
         env: Env,
         from: Address,
@@ -332,11 +369,29 @@ impl CarbonCreditContract {
     }
 
     /// Returns a [`CreditBatch`] by ID.
+    ///
+    /// # Parameters
+    /// - `batch_id`: The credit batch identifier
+    ///
+    /// # Returns
+    /// The credit batch record
+    ///
+    /// # Errors
+    /// - [`CarbonError::ProjectNotFound`] if batch does not exist
     pub fn get_credit_batch(env: Env, batch_id: String) -> Result<CreditBatch, CarbonError> {
         Self::load_batch(&env, &batch_id)
     }
 
     /// Returns a permanent [`RetirementCertificate`] by retirement ID.
+    ///
+    /// # Parameters
+    /// - `retirement_id`: The retirement identifier
+    ///
+    /// # Returns
+    /// The retirement certificate record
+    ///
+    /// # Errors
+    /// - [`CarbonError::ProjectNotFound`] if retirement does not exist
     pub fn get_retirement_certificate(
         env: Env,
         retirement_id: String,
@@ -349,11 +404,24 @@ impl CarbonCreditContract {
 
     /// Returns `true` if the serial range `[serial_start, serial_end]` does NOT
     /// overlap any existing batch — i.e., safe to mint.
+    ///
+    /// # Parameters
+    /// - `serial_start`: Starting serial number
+    /// - `serial_end`: Ending serial number
+    ///
+    /// # Returns
+    /// `true` if the range is available, `false` if it conflicts
     pub fn verify_serial_range(env: Env, serial_start: u64, serial_end: u64) -> bool {
         Self::verify_serial_range_internal(&env, serial_start, serial_end)
     }
 
     /// Returns all [`CreditBatch`] records for a given project.
+    ///
+    /// # Parameters
+    /// - `project_id`: The project identifier
+    ///
+    /// # Returns
+    /// Vector of all credit batches for the project
     pub fn get_project_credits(env: Env, project_id: String) -> Vec<CreditBatch> {
         let batch_ids: Vec<String> = env
             .storage()
