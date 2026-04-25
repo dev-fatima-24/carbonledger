@@ -6,6 +6,10 @@ use soroban_sdk::{
     symbol_short, vec,
 };
 
+/// TTL extension in ledgers (~30 days at 5s/ledger).
+/// Cost: ~0.00001 XLM per ledger entry extended. See docs/ttl-cost.md.
+const TTL_LEDGERS: u32 = 518_400;
+
 // ── Error Enum ────────────────────────────────────────────────────────────────
 
 #[contracterror]
@@ -30,6 +34,7 @@ pub enum CarbonError {
     ZeroAmountNotAllowed   = 16,
     ProjectAlreadyExists   = 17,
     InvalidSerialRange     = 18,
+    AlreadyInitialized     = 19,
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -110,12 +115,17 @@ pub struct CarbonCreditContract;
 impl CarbonCreditContract {
 
     /// Initialise with admin address.
-    pub fn initialize(env: Env, admin: Address, registry_contract: Address) {
+    /// Can only be called once — subsequent calls return [`CarbonError::AlreadyInitialized`].
+    pub fn initialize(env: Env, admin: Address, registry_contract: Address) -> Result<(), CarbonError> {
+        if env.storage().persistent().has(&DataKey::Admin) {
+            return Err(CarbonError::AlreadyInitialized);
+        }
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::RegistryContract, &registry_contract);
         let ranges: Vec<SerialRange> = vec![&env];
         env.storage().persistent().set(&DataKey::SerialRegistry, &ranges);
+        Ok(())
     }
 
     /// Returns the current year based on the ledger timestamp.
@@ -176,6 +186,11 @@ impl CarbonCreditContract {
             return Err(CarbonError::SerialNumberConflict);
         }
 
+        // AUDIT-NOTE [HIGH]: No cross-contract call to carbon_registry to verify the
+        // project is in `Verified` status. Credits can be minted for Pending, Rejected,
+        // or Suspended projects. Fix: invoke carbon_registry::get_project() and assert
+        // status == ProjectStatus::Verified before proceeding.
+
         // Enforce global serial uniqueness
         if !Self::verify_serial_range_internal(&env, serial_start, serial_end) {
             return Err(CarbonError::DoubleCountingDetected);
@@ -183,6 +198,10 @@ impl CarbonCreditContract {
 
         // ── effects ───────────────────────────────────────────────────────────
         // Register serial range globally
+        // AUDIT-NOTE [LOW]: SerialRegistry is an unbounded Vec. The overlap check is
+        // O(n) over all historical ranges. With enough batches, this will exceed
+        // Soroban's instruction limit, permanently bricking new minting. Fix: replace
+        // with a sorted interval structure or a bitmap keyed by range blocks.
         let mut ranges: Vec<SerialRange> = env
             .storage()
             .persistent()
@@ -203,6 +222,7 @@ impl CarbonCreditContract {
             metadata_cid: metadata_cid.clone(),
         };
         env.storage().persistent().set(&DataKey::Batch(batch_id.clone()), &batch);
+        Self::extend_batch_ttl(&env, &batch_id);
 
         // Append to project batch index
         let mut project_batches: Vec<String> = env
@@ -241,6 +261,11 @@ impl CarbonCreditContract {
         // ── checks ────────────────────────────────────────────────────────────
         holder.require_auth();
 
+        // AUDIT-NOTE [HIGH]: No ownership check. Any authenticated address can retire
+        // any batch, permanently destroying credits they do not own. Fix: maintain an
+        // on-chain Map<batch_id, Address> ownership record updated by transfer_credits
+        // and mint_credits, and assert ownership here.
+
         if amount <= 0 {
             return Err(CarbonError::ZeroAmountNotAllowed);
         }
@@ -267,6 +292,11 @@ impl CarbonCreditContract {
             .get(&RetiredKey::BatchRetired(batch_id.clone()))
             .unwrap_or(0i128);
 
+        // AUDIT-NOTE [HIGH]: Unchecked i128 → u64 cast. If `already_retired` exceeds
+        // u64::MAX (~1.8×10¹⁹), the cast wraps silently in release Wasm builds,
+        // producing incorrect serial numbers in the certificate and potentially
+        // re-issuing serial numbers that were already retired.
+        // Fix: use `u64::try_from(already_retired).map_err(|_| CarbonError::InvalidSerialRange)?`
         let retire_serial_start = batch.serial_start + already_retired as u64;
         let retire_serial_end   = retire_serial_start + amount as u64 - 1;
 
@@ -288,6 +318,7 @@ impl CarbonCreditContract {
             CreditStatus::PartiallyRetired
         };
         env.storage().persistent().set(&DataKey::Batch(batch_id.clone()), &batch);
+        Self::extend_batch_ttl(&env, &batch_id);
 
         let cert = RetirementCertificate {
             retirement_id:     retirement_id.clone(),
@@ -346,6 +377,10 @@ impl CarbonCreditContract {
         }
 
         // ── effects ───────────────────────────────────────────────────────────
+        // AUDIT-NOTE [HIGH]: Transfer is a no-op — no ownership record is updated.
+        // Only an event is emitted. This means on-chain state does not reflect the
+        // new owner, so retire_credits cannot enforce ownership. Fix: maintain a
+        // Map<batch_id, Address> and update it here and in mint_credits.
         env.events().publish(
             (symbol_short!("c_ledger"), symbol_short!("transfer")),
             (batch_id, from, to, amount),
@@ -394,11 +429,24 @@ impl CarbonCreditContract {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
+    /// Extend TTL on a batch entry so it is not evicted by Soroban rent.
+    /// Called on every read/write to active batches.
+    fn extend_batch_ttl(env: &Env, batch_id: &String) {
+        let key = DataKey::Batch(batch_id.clone());
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+        }
+    }
+
     fn load_batch(env: &Env, batch_id: &String) -> Result<CreditBatch, CarbonError> {
-        env.storage()
+        let key = DataKey::Batch(batch_id.clone());
+        let batch = env.storage()
             .persistent()
-            .get(&DataKey::Batch(batch_id.clone()))
-            .ok_or(CarbonError::ProjectNotFound)
+            .get(&key)
+            .ok_or(CarbonError::ProjectNotFound)?;
+        // Extend TTL on every read so active batches never expire
+        env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+        Ok(batch)
     }
 
     fn require_admin(env: &Env, caller: &Address) -> Result<(), CarbonError> {
@@ -457,7 +505,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let client = CarbonCreditContractClient::new(&env, &id);
-        client.initialize(&admin, &registry);
+        client.initialize(&admin, &registry).unwrap();
         (env, client)
     }
 
@@ -483,7 +531,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(
             &admin,
@@ -508,7 +556,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
         // Overlapping range 50-150 should fail
@@ -523,7 +571,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
         // Non-overlapping range should return true
@@ -539,7 +587,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
 
@@ -568,7 +616,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
 
@@ -587,7 +635,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
 
@@ -605,7 +653,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
 
@@ -623,7 +671,7 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         c.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid")).unwrap();
 
@@ -642,9 +690,22 @@ mod tests {
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let c = CarbonCreditContractClient::new(&env, &id);
-        c.initialize(&admin, &registry);
+        c.initialize(&admin, &registry).unwrap();
 
         let result = c.try_mint_credits(&admin, &s(&env, "p1"), &0_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_initialize_twice_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin    = Address::generate(&env);
+        let registry = Address::generate(&env);
+        let id = env.register_contract(None, CarbonCreditContract);
+        let c = CarbonCreditContractClient::new(&env, &id);
+        c.initialize(&admin, &registry).unwrap();
+        let result = c.try_initialize(&admin, &registry);
         assert!(result.is_err());
     }
 }
