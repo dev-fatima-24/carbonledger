@@ -43,15 +43,15 @@ export default function ProjectDetailPage({ params }: { params: { id: string } }
         <a href="/projects" style={{ fontSize: "0.875rem", color: colors.primary[600], textDecoration: "none" }}>
           ← All Projects
         </a>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginTop: "1rem" }}>
-          <div>
-            <h1 style={{ fontSize: "2rem", fontWeight: 800, color: colors.neutral[900], margin: "0 0 0.5rem" }}>
-              {project.name}
-            </h1>
-            <p style={{ color: colors.neutral[500], margin: 0 }}>
-              {project.methodology} · {project.projectType} · {project.country} · {project.vintageYear} Vintage
-            </p>
-          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginTop: "1rem" }}>
+            <div>
+              <h1 style={{ fontSize: "2rem", fontWeight: 800, color: colors.neutral[900], margin: "0 0 0.5rem" }}>
+                {project.name}
+              </h1>
+              <p style={{ color: colors.neutral[500], margin: 0 }}>
+                {project.methodology} · {project.projectType} · {project.country} · {project.vintageYear} Vintage · Score {project.methodologyScore}/100
+              </p>
+            </div>
           <span style={{
             background: badge.bg, color: badge.text, border: `1px solid ${badge.border}`,
             borderRadius: "9999px", padding: "0.3rem 0.75rem", fontSize: "0.8rem", fontWeight: 700,
@@ -72,11 +72,12 @@ export default function ProjectDetailPage({ params }: { params: { id: string } }
             <h2 style={{ fontSize: "1rem", fontWeight: 700, color: colors.neutral[800], margin: "0 0 1rem" }}>
               Credit Summary
             </h2>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "1rem" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "1rem" }}>
               {[
                 { label: "Total Issued",   value: formatTonnes(project.totalCreditsIssued),   color: colors.primary[700] },
                 { label: "Total Retired",  value: formatTonnes(project.totalCreditsRetired),  color: colors.neutral[700] },
                 { label: "Retirement Rate", value: `${retiredPct}%`,                          color: retiredPct > 50 ? colors.primary[600] : colors.neutral[600] },
+                { label: "Methodology Score", value: `${project.methodologyScore}/100`, color: project.methodologyScore >= 70 ? colors.primary[600] : colors.neutral[600] },
               ].map(({ label, value, color }) => (
                 <div key={label}>
                   <p style={{ fontSize: "0.7rem", color: colors.neutral[400], margin: "0 0 0.2rem" }}>{label}</p>

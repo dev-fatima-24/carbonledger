@@ -149,6 +149,14 @@ impl CarbonMarketplaceContract {
         if amount <= 0 || price_per_credit_usdc <= 0 {
             return Err(CarbonError::ZeroAmountNotAllowed);
         }
+        if price_per_credit_usdc <= 0 {
+            return Err(CarbonError::ZeroAmountNotAllowed);
+        }
+
+        let current_year = Self::current_year(&env);
+        if vintage_year < 1990 || vintage_year > current_year + 1 {
+            return Err(CarbonError::InvalidVintageYear);
+        }
 
         if env.storage().persistent().get::<DataKey, bool>(&DataKey::SuspendedProject(project_id.clone())).unwrap_or(false) {
             return Err(CarbonError::ProjectSuspended);

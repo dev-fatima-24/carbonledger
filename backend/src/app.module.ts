@@ -8,6 +8,7 @@ import { MarketplaceModule } from "./marketplace/marketplace.module";
 import { OracleModule } from "./oracle/oracle.module";
 import { StatsModule } from "./stats/stats.module";
 import { QueueModule } from "./queue/queue.module";
+import { UploadsModule } from "./uploads/uploads.module";
 import { PrismaService } from "./prisma.service";
 
 @Controller("health")
@@ -39,6 +40,7 @@ class HealthController {
     OracleModule,
     StatsModule,
     QueueModule,
+    UploadsModule,
   ],
   controllers: [HealthController],
   providers: [PrismaService],
