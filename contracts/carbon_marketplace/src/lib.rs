@@ -7,6 +7,10 @@ use soroban_sdk::{
     token,
 };
 
+/// TTL extension in ledgers (~30 days at 5s/ledger).
+/// Cost: ~0.00001 XLM per ledger entry extended. See docs/ttl-cost.md.
+const TTL_LEDGERS: u32 = 518_400;
+
 // ── Error Enum ────────────────────────────────────────────────────────────────
 
 #[contracterror]
@@ -163,6 +167,7 @@ impl CarbonMarketplaceContract {
             status:           ListingStatus::Active,
         };
         env.storage().persistent().set(&DataKey::Listing(listing_id.clone()), &listing);
+        Self::extend_listing_ttl(&env, &listing_id);
 
         let mut all: Vec<String> = env
             .storage()
@@ -200,6 +205,7 @@ impl CarbonMarketplaceContract {
         // ── effects ───────────────────────────────────────────────────────────
         listing.status = ListingStatus::Delisted;
         env.storage().persistent().set(&DataKey::Listing(listing_id.clone()), &listing);
+        Self::extend_listing_ttl(&env, &listing_id);
 
         env.events().publish(
             (symbol_short!("c_ledger"), symbol_short!("delisted")),
@@ -255,6 +261,7 @@ impl CarbonMarketplaceContract {
             ListingStatus::PartiallyFilled
         };
         env.storage().persistent().set(&DataKey::Listing(listing_id.clone()), &listing);
+        Self::extend_listing_ttl(&env, &listing_id);
 
         // ── interactions ──────────────────────────────────────────────────────
         let usdc: Address = env.storage().persistent().get(&DataKey::UsdcToken).unwrap();
@@ -325,6 +332,7 @@ impl CarbonMarketplaceContract {
                 ListingStatus::PartiallyFilled
             };
             env.storage().persistent().set(&DataKey::Listing(listing_id.clone()), &listing);
+            Self::extend_listing_ttl(&env, &listing_id);
 
             let usdc: Address = env.storage().persistent().get(&DataKey::UsdcToken).unwrap();
             let usdc_client = token::Client::new(&env, &usdc);
@@ -365,11 +373,24 @@ impl CarbonMarketplaceContract {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
+    /// Extend TTL on a listing entry so it is not evicted by Soroban rent.
+    /// Called on every read/write to active listings.
+    fn extend_listing_ttl(env: &Env, listing_id: &String) {
+        let key = DataKey::Listing(listing_id.clone());
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+        }
+    }
+
     fn load_listing(env: &Env, listing_id: &String) -> Result<MarketListing, CarbonError> {
-        env.storage()
+        let key = DataKey::Listing(listing_id.clone());
+        let listing = env.storage()
             .persistent()
-            .get(&DataKey::Listing(listing_id.clone()))
-            .ok_or(CarbonError::ListingNotFound)
+            .get(&key)
+            .ok_or(CarbonError::ListingNotFound)?;
+        // Extend TTL on every read so active listings never expire
+        env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+        Ok(listing)
     }
 
     fn filter_listings<F: Fn(&MarketListing) -> bool>(env: &Env, predicate: F) -> Vec<MarketListing> {

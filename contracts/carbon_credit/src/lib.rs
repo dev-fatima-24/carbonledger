@@ -6,6 +6,10 @@ use soroban_sdk::{
     symbol_short, vec,
 };
 
+/// TTL extension in ledgers (~30 days at 5s/ledger).
+/// Cost: ~0.00001 XLM per ledger entry extended. See docs/ttl-cost.md.
+const TTL_LEDGERS: u32 = 518_400;
+
 // ── Error Enum ────────────────────────────────────────────────────────────────
 
 #[contracterror]
@@ -196,6 +200,7 @@ impl CarbonCreditContract {
             metadata_cid: metadata_cid.clone(),
         };
         env.storage().persistent().set(&DataKey::Batch(batch_id.clone()), &batch);
+        Self::extend_batch_ttl(&env, &batch_id);
 
         // Append to project batch index
         let mut project_batches: Vec<String> = env
@@ -291,6 +296,7 @@ impl CarbonCreditContract {
             CreditStatus::PartiallyRetired
         };
         env.storage().persistent().set(&DataKey::Batch(batch_id.clone()), &batch);
+        Self::extend_batch_ttl(&env, &batch_id);
 
         let cert = RetirementCertificate {
             retirement_id:     retirement_id.clone(),
@@ -401,11 +407,24 @@ impl CarbonCreditContract {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
+    /// Extend TTL on a batch entry so it is not evicted by Soroban rent.
+    /// Called on every read/write to active batches.
+    fn extend_batch_ttl(env: &Env, batch_id: &String) {
+        let key = DataKey::Batch(batch_id.clone());
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+        }
+    }
+
     fn load_batch(env: &Env, batch_id: &String) -> Result<CreditBatch, CarbonError> {
-        env.storage()
+        let key = DataKey::Batch(batch_id.clone());
+        let batch = env.storage()
             .persistent()
-            .get(&DataKey::Batch(batch_id.clone()))
-            .ok_or(CarbonError::ProjectNotFound)
+            .get(&key)
+            .ok_or(CarbonError::ProjectNotFound)?;
+        // Extend TTL on every read so active batches never expire
+        env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+        Ok(batch)
     }
 
     fn require_admin(env: &Env, caller: &Address) -> Result<(), CarbonError> {
