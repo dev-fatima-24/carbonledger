@@ -134,6 +134,9 @@ export class ProjectsService {
   async register(dto: RegisterProjectDto) {
     const existing = await this.prisma.carbonProject.findUnique({ where: { projectId: dto.projectId } });
     if (existing) throw new ConflictException(`Project ${dto.projectId} already exists`);
+    if (dto.methodologyScore < 70) {
+      throw new ConflictException(`Project registration rejected: methodology score ${dto.methodologyScore} is below minimum 70/100`);
+    }
     return this.prisma.carbonProject.create({ data: dto });
   }
 

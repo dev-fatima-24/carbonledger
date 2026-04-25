@@ -1,10 +1,10 @@
-import { IsString, IsInt, IsPositive } from "class-validator";
+import { IsString, IsInt, IsPositive, Min, Max } from "class-validator";
 import { Type } from "class-transformer";
 
 export class MintCreditsDto {
   @IsString() batchId: string;
   @IsString() projectId: string;
-  @IsInt() @IsPositive() @Type(() => Number) vintageYear: number;
+  @IsInt() @IsPositive() @Min(1990) @Max(2027) @Type(() => Number) vintageYear: number;
   @IsInt() @IsPositive() @Type(() => Number) amount: number;
   @IsString() serialStart: string;
   @IsString() serialEnd: string;

@@ -57,7 +57,7 @@ pub enum ProjectStatus {
 }
 
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CarbonProject {
     pub project_id:            String,
     pub name:                  String,
@@ -68,6 +68,7 @@ pub struct CarbonProject {
     pub metadata_cid:          String,
     pub total_credits_issued:  i128,
     pub total_credits_retired: i128,
+    pub methodology_score:     u32,
     pub status:                ProjectStatus,
     pub vintage_year:          u32,
     pub created_at:            u64,
@@ -99,12 +100,19 @@ impl CarbonRegistryContract {
         Ok(())
     }
 
+    /// Returns the current year based on the ledger timestamp.
+    fn current_year(env: &Env) -> u32 {
+        let seconds_per_year: u64 = 31557600; // Approximate seconds in a year
+        let timestamp = env.ledger().timestamp();
+        1970 + (timestamp / seconds_per_year) as u32
+    }
+
     /// Register a new carbon offset project. Status is set to `Pending` until a
     /// verifier calls [`verify_project`].
     ///
     /// # Errors
     /// - [`CarbonError::ProjectAlreadyExists`] if `project_id` is already registered.
-    /// - [`CarbonError::InvalidVintageYear`] if `vintage_year` is before 2000 or after 2100.
+    /// - [`CarbonError::InvalidVintageYear`] if `vintage_year` is before 1990 or after current year + 1.
     pub fn register_project(
         env: Env,
         admin: Address,
@@ -115,17 +123,43 @@ impl CarbonRegistryContract {
         methodology: String,
         country: String,
         project_type: String,
+        methodology_score: u32,
         vintage_year: u32,
     ) -> Result<(), CarbonError> {
         // ── checks ────────────────────────────────────────────────────────────
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
+        if project_id.is_empty() || project_id.chars().count() > 64 {
+            return Err(CarbonError::ProjectNotFound); // Reusing an error for simplicity; consider adding new errors
+        }
+        if name.is_empty() || name.chars().count() > 128 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+        if metadata_cid.is_empty() || metadata_cid.chars().count() > 128 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+        if methodology.is_empty() || methodology.chars().count() > 64 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+        if country.is_empty() || country.chars().count() > 64 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+        if project_type.is_empty() || project_type.chars().count() > 64 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+
+        let current_year = Self::current_year(&env);
+        if vintage_year < 1990 || vintage_year > current_year + 1 {
+            return Err(CarbonError::InvalidVintageYear);
+        }
+
+        if methodology_score < 70 {
+            return Err(CarbonError::InvalidVintageYear);
+        }
+
         if env.storage().persistent().has(&DataKey::Project(project_id.clone())) {
             return Err(CarbonError::ProjectAlreadyExists);
-        }
-        if vintage_year < 2000 || vintage_year > 2100 {
-            return Err(CarbonError::InvalidVintageYear);
         }
 
         // ── effects ───────────────────────────────────────────────────────────
@@ -139,6 +173,7 @@ impl CarbonRegistryContract {
             metadata_cid:          metadata_cid.clone(),
             total_credits_issued:  0,
             total_credits_retired: 0,
+            methodology_score,
             status:                ProjectStatus::Pending,
             vintage_year,
             created_at:            env.ledger().timestamp(),
@@ -147,7 +182,7 @@ impl CarbonRegistryContract {
 
         env.events().publish(
             (symbol_short!("c_ledger"), symbol_short!("reg_proj")),
-            (project_id, methodology, country, vintage_year),
+            (project_id, methodology, country, vintage_year, methodology_score),
         );
         Ok(())
     }

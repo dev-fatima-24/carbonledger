@@ -130,6 +130,13 @@ impl CarbonCreditContract {
         Ok(())
     }
 
+    /// Returns the current year based on the ledger timestamp.
+    fn current_year(env: &Env) -> u32 {
+        let seconds_per_year: u64 = 31557600; // Approximate seconds in a year
+        let timestamp = env.ledger().timestamp();
+        1970 + (timestamp / seconds_per_year) as u32
+    }
+
     /// Mint verified carbon credits for a verified project. Assigns unique serial
     /// numbers to each credit, preventing double-counting globally.
     /// The `initial_owner` receives ownership of the batch.
@@ -138,7 +145,8 @@ impl CarbonCreditContract {
     /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` is zero.
     /// - [`CarbonError::InvalidSerialRange`] if `serial_end < serial_start`.
     /// - [`CarbonError::SerialNumberConflict`] if serial range overlaps an existing batch.
-    /// - [`CarbonError::InvalidVintageYear`] if vintage year is out of range.
+    /// - [`CarbonError::InvalidVintageYear`] if vintage year is before 1990 or after current year + 1.
+    /// - [`CarbonError::ProjectNotFound`] if any string input is empty or too long.
     pub fn mint_credits(
         env: Env,
         admin: Address,
@@ -155,13 +163,27 @@ impl CarbonCreditContract {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
+        // Validate string inputs (non-empty and reasonable length)
+        if project_id.is_empty() || project_id.chars().count() > 64 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+        if batch_id.is_empty() || batch_id.chars().count() > 64 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+        if metadata_cid.is_empty() || metadata_cid.chars().count() > 128 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+
+        // Validate numeric inputs
         if amount <= 0 {
             return Err(CarbonError::ZeroAmountNotAllowed);
         }
-        if serial_end < serial_start {
+        if serial_end <= serial_start {
             return Err(CarbonError::InvalidSerialRange);
         }
-        if vintage_year < 2000 || vintage_year > 2100 {
+
+        let current_year = Self::current_year(&env);
+        if vintage_year < 1990 || vintage_year > current_year + 1 {
             return Err(CarbonError::InvalidVintageYear);
         }
         if env.storage().persistent().has(&DataKey::Batch(batch_id.clone())) {
