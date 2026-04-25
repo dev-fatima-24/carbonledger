@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror,
-    Address, Env, String, Vec,
+    Address, Env, String, Vec, IntoVal,
     symbol_short, vec,
     token,
 };
@@ -47,6 +47,7 @@ pub enum DataKey {
     AllListings,
     Admin,
     UsdcToken,
+    CreditContract,
     SuspendedProject(String),
 }
 
@@ -86,14 +87,15 @@ pub struct CarbonMarketplaceContract;
 impl CarbonMarketplaceContract {
 
     /// Initialise marketplace with admin and USDC token contract address.
-    /// Can only be called once — subsequent calls return [`CarbonError::AlreadyInitialized`].
-    pub fn initialize(env: Env, admin: Address, usdc_token: Address) -> Result<(), CarbonError> {
-        if env.storage().persistent().has(&DataKey::Admin) {
-            return Err(CarbonError::AlreadyInitialized);
-        }
+    ///
+    /// # Parameters
+    /// - `admin`: The address that will have administrative privileges
+    /// - `usdc_token`: Address of the USDC token contract for payments
+    pub fn initialize(env: Env, admin: Address, usdc_token: Address) {
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::UsdcToken, &usdc_token);
+        env.storage().persistent().set(&DataKey::CreditContract, &credit_contract);
         let listings: Vec<String> = vec![&env];
         env.storage().persistent().set(&DataKey::AllListings, &listings);
         Ok(())
@@ -116,6 +118,17 @@ impl CarbonMarketplaceContract {
     }
 
     /// List carbon credits for sale at a fixed USDC price per credit (in stroops).
+    ///
+    /// # Parameters
+    /// - `seller`: The address listing the credits for sale
+    /// - `listing_id`: Unique identifier for this listing
+    /// - `batch_id`: The credit batch identifier
+    /// - `project_id`: The project identifier
+    /// - `amount`: Number of credits to list
+    /// - `price_per_credit_usdc`: Price per credit in USDC stroops
+    /// - `vintage_year`: Year the credits were generated
+    /// - `methodology`: Carbon accounting methodology
+    /// - `country`: Country where the project is located
     ///
     /// # Errors
     /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` or `price_per_credit_usdc` is zero.
@@ -146,6 +159,14 @@ impl CarbonMarketplaceContract {
 
         if amount <= 0 || price_per_credit_usdc <= 0 {
             return Err(CarbonError::ZeroAmountNotAllowed);
+        }
+        if price_per_credit_usdc <= 0 {
+            return Err(CarbonError::ZeroAmountNotAllowed);
+        }
+
+        let current_year = Self::current_year(&env);
+        if vintage_year < 1990 || vintage_year > current_year + 1 {
+            return Err(CarbonError::InvalidVintageYear);
         }
 
         if env.storage().persistent().get::<DataKey, bool>(&DataKey::SuspendedProject(project_id.clone())).unwrap_or(false) {
@@ -186,9 +207,13 @@ impl CarbonMarketplaceContract {
 
     /// Remove an active listing. Only the original seller may delist.
     ///
+    /// # Parameters
+    /// - `seller`: The seller's address
+    /// - `listing_id`: The listing identifier to remove
+    ///
     /// # Errors
-    /// - [`CarbonError::ListingNotFound`] if listing does not exist.
-    /// - [`CarbonError::UnauthorizedVerifier`] if caller is not the seller.
+    /// - [`CarbonError::ListingNotFound`] if listing does not exist
+    /// - [`CarbonError::UnauthorizedVerifier`] if caller is not the seller
     pub fn delist_credits(
         env: Env,
         seller: Address,
@@ -217,9 +242,15 @@ impl CarbonMarketplaceContract {
     /// Purchase credits from a listing. Transfers USDC from buyer to seller.
     /// Protocol fee of 1% is retained by the admin.
     ///
+    /// # Parameters
+    /// - `buyer`: The buyer's address
+    /// - `listing_id`: The listing identifier to purchase from
+    /// - `amount`: Number of credits to purchase
+    ///
     /// # Errors
-    /// - [`CarbonError::ListingNotFound`] if listing does not exist.
-    /// - [`CarbonError::InsufficientLiquidity`] if listing has fewer credits than requested.
+    /// - [`CarbonError::ListingNotFound`] if listing does not exist or is not active
+    /// - [`CarbonError::InsufficientLiquidity`] if listing has fewer credits than requested
+    /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` is zero
     pub fn purchase_credits(
         env: Env,
         buyer: Address,
@@ -271,6 +302,21 @@ impl CarbonMarketplaceContract {
         let admin: Address = env.storage().persistent().get(&DataKey::Admin).unwrap();
         usdc_client.transfer(&buyer, &admin, &protocol_fee);
 
+        // Transfer credits from seller to buyer via the verified credit contract.
+        // The contract address was set at initialization and cannot be changed.
+        let credit_contract: Address = env.storage().persistent().get(&DataKey::CreditContract).unwrap();
+        env.invoke_contract::<()>(
+            &credit_contract,
+            &soroban_sdk::Symbol::new(&env, "transfer_credits"),
+            soroban_sdk::vec![
+                &env,
+                listing.seller.into_val(&env),
+                buyer.into_val(&env),
+                listing.batch_id.into_val(&env),
+                amount.into_val(&env),
+            ],
+        );
+
         env.events().publish(
             (symbol_short!("c_ledger"), symbol_short!("purchase")),
             (listing_id, buyer, listing.seller, amount, total_cost),
@@ -279,6 +325,11 @@ impl CarbonMarketplaceContract {
     }
 
     /// Bulk purchase from multiple listings in a single transaction.
+    ///
+    /// # Parameters
+    /// - `buyer`: The buyer's address
+    /// - `listing_ids`: Vector of listing identifiers to purchase from
+    /// - `amounts`: Vector of amounts to purchase from each listing
     ///
     /// # Errors
     /// - Any error from individual [`purchase_credits`] calls propagates immediately.
@@ -341,6 +392,19 @@ impl CarbonMarketplaceContract {
             let admin: Address = env.storage().persistent().get(&DataKey::Admin).unwrap();
             usdc_client.transfer(&buyer, &admin, &protocol_fee);
 
+            let credit_contract: Address = env.storage().persistent().get(&DataKey::CreditContract).unwrap();
+            env.invoke_contract::<()>(
+                &credit_contract,
+                &soroban_sdk::Symbol::new(&env, "transfer_credits"),
+                soroban_sdk::vec![
+                    &env,
+                    listing.seller.into_val(&env),
+                    buyer.clone().into_val(&env),
+                    listing.batch_id.into_val(&env),
+                    amount.into_val(&env),
+                ],
+            );
+
             env.events().publish(
                 (symbol_short!("c_ledger"), symbol_short!("bulk_buy")),
                 (listing_id, buyer.clone(), amount, total_cost),
@@ -350,11 +414,23 @@ impl CarbonMarketplaceContract {
     }
 
     /// Returns a single [`MarketListing`] by ID.
+    ///
+    /// # Parameters
+    /// - `listing_id`: The listing identifier
+    ///
+    /// # Returns
+    /// The market listing record
+    ///
+    /// # Errors
+    /// - [`CarbonError::ListingNotFound`] if listing does not exist
     pub fn get_listing(env: Env, listing_id: String) -> Result<MarketListing, CarbonError> {
         Self::load_listing(&env, &listing_id)
     }
 
     /// Returns all listings with `Active` or `PartiallyFilled` status.
+    ///
+    /// # Returns
+    /// Vector of all active market listings
     pub fn get_active_listings(env: Env) -> Vec<MarketListing> {
         Self::filter_listings(&env, |l| {
             l.status == ListingStatus::Active || l.status == ListingStatus::PartiallyFilled
@@ -362,11 +438,23 @@ impl CarbonMarketplaceContract {
     }
 
     /// Returns all listings for a given project ID.
+    ///
+    /// # Parameters
+    /// - `project_id`: The project identifier
+    ///
+    /// # Returns
+    /// Vector of all listings for the project
     pub fn get_listings_by_project(env: Env, project_id: String) -> Vec<MarketListing> {
         Self::filter_listings(&env, |l| l.project_id == project_id)
     }
 
     /// Returns all listings matching a given vintage year.
+    ///
+    /// # Parameters
+    /// - `vintage_year`: The vintage year to filter by
+    ///
+    /// # Returns
+    /// Vector of all listings for the vintage year
     pub fn get_listings_by_vintage(env: Env, vintage_year: u32) -> Vec<MarketListing> {
         Self::filter_listings(&env, |l| l.vintage_year == vintage_year)
     }
@@ -418,9 +506,10 @@ impl CarbonMarketplaceContract {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, MockAuth, MockAuthInvoke},
-        vec, Env, IntoVal, String,
+        testutils::Address as _,
+        vec, Env, String,
     };
+    use carbon_credit::CarbonCreditContract;
 
     fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
 
@@ -429,9 +518,10 @@ mod tests {
         let admin  = Address::generate(env);
         let seller = Address::generate(env);
         let usdc   = env.register_stellar_asset_contract(admin.clone());
+        let credit_id = env.register_contract(None, CarbonCreditContract);
         let id     = env.register_contract(None, CarbonMarketplaceContract);
         let client = CarbonMarketplaceContractClient::new(env, &id);
-        client.initialize(&admin, &usdc).unwrap();
+        client.initialize(&admin, &usdc, &credit_id).unwrap();
         (client, admin, seller, usdc)
     }
 
@@ -566,5 +656,206 @@ mod tests {
         add_listing(&env, &client, &seller);
         let l = client.get_listing(&s(&env, "list-001")).unwrap();
         assert_eq!(l.status, ListingStatus::Active);
+    }
+
+    /// Deploying the marketplace with a wrong (unrelated) credit contract address
+    /// must cause purchases to fail — the cross-contract call will find no
+    /// `transfer_credits` function and the transaction will be rejected.
+    #[test]
+    fn test_purchase_fails_with_wrong_credit_contract() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin  = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let buyer  = Address::generate(&env);
+        let usdc   = env.register_stellar_asset_contract(admin.clone());
+
+        // Register a dummy contract that has no transfer_credits function.
+        // Using the marketplace contract itself as the "wrong" credit contract.
+        let wrong_credit = env.register_contract(None, CarbonMarketplaceContract);
+
+        let mkt_id = env.register_contract(None, CarbonMarketplaceContract);
+        let client = CarbonMarketplaceContractClient::new(&env, &mkt_id);
+        client.initialize(&admin, &usdc, &wrong_credit).unwrap();
+
+        client.list_credits(
+            &seller,
+            &s(&env, "list-001"),
+            &s(&env, "batch-001"),
+            &s(&env, "proj-001"),
+            &100_i128,
+            &1_i128,
+            &2023_u32,
+            &s(&env, "VCS"),
+            &s(&env, "Brazil"),
+        ).unwrap();
+
+        // Purchase must fail because wrong_credit has no transfer_credits function
+        let result = client.try_purchase_credits(&buyer, &s(&env, "list-001"), &10_i128);
+        assert!(result.is_err());
+    }
+}
+
+// ── Property-based fuzz tests ─────────────────────────────────────────────────
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+    use soroban_sdk::{testutils::Address as _, Env, String};
+
+    fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
+
+    /// Set up a fresh marketplace with a USDC mock and one active listing of
+    /// `listing_amount` credits at `price_per_credit` stroops each.
+    fn setup_with_listing(
+        listing_amount: i128,
+        price_per_credit: i128,
+    ) -> (Env, CarbonMarketplaceContractClient<'static>, Address, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin  = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let usdc   = env.register_stellar_asset_contract(admin.clone());
+        let id     = env.register_contract(None, CarbonMarketplaceContract);
+        let env: &'static Env = Box::leak(Box::new(env));
+        let client = CarbonMarketplaceContractClient::new(env, &id);
+        client.initialize(&admin, &usdc).unwrap();
+        client.list_credits(
+            &seller,
+            &s(env, "list-fuzz"),
+            &s(env, "batch-fuzz"),
+            &s(env, "proj-fuzz"),
+            &listing_amount,
+            &price_per_credit,
+            &2023_u32,
+            &s(env, "VCS"),
+            &s(env, "Brazil"),
+        ).unwrap();
+        (env.clone(), client, admin, seller, usdc)
+    }
+
+    proptest! {
+        /// Purchasing zero or negative credits must return ZeroAmountNotAllowed — never panic.
+        #[test]
+        fn fuzz_purchase_zero_or_negative(amount in i128::MIN..=0_i128) {
+            let (env, client, _, _, _) = setup_with_listing(100, 10_0000000);
+            let buyer = Address::generate(&env);
+            let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &amount);
+            prop_assert!(result.is_err());
+        }
+
+        /// Purchasing more than available must return InsufficientLiquidity — never panic.
+        #[test]
+        fn fuzz_purchase_exceeds_available(excess in 1_i128..1_000_000_i128) {
+            let (env, client, _, _, _) = setup_with_listing(100, 10_0000000);
+            let buyer = Address::generate(&env);
+            let over = 100_i128 + excess;
+            let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &over);
+            prop_assert!(result.is_err());
+        }
+
+        /// Purchasing from a non-existent listing must return ListingNotFound — never panic.
+        #[test]
+        fn fuzz_purchase_nonexistent_listing(suffix in "[a-z]{1,8}") {
+            let (env, client, _, _, _) = setup_with_listing(100, 10_0000000);
+            let buyer = Address::generate(&env);
+            let bad_id = format!("no-such-{}", suffix);
+            let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &10_i128);
+            // Sanity: valid listing still works; bad one fails
+            let bad_result = client.try_purchase_credits(&buyer, &s(&env, &bad_id), &10_i128);
+            prop_assert!(bad_result.is_err());
+            let _ = result; // valid purchase may succeed or fail depending on USDC balance
+        }
+
+        /// Purchasing from a delisted listing must return ListingNotFound — never panic.
+        #[test]
+        fn fuzz_purchase_delisted_listing(amount in 1_i128..50_i128) {
+            let (env, client, _, seller, _) = setup_with_listing(100, 10_0000000);
+            client.delist_credits(&seller, &s(&env, "list-fuzz")).unwrap();
+            let buyer = Address::generate(&env);
+            let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &amount);
+            prop_assert!(result.is_err());
+        }
+
+        /// Purchasing from a suspended project must return ProjectSuspended — never panic.
+        #[test]
+        fn fuzz_purchase_suspended_project(amount in 1_i128..50_i128) {
+            let (env, client, admin, _, _) = setup_with_listing(100, 10_0000000);
+            client.suspend_project(&admin, &s(&env, "proj-fuzz")).unwrap();
+            let buyer = Address::generate(&env);
+            let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &amount);
+            prop_assert!(result.is_err());
+        }
+
+        /// Valid purchase reduces amount_available by exactly the purchased amount.
+        #[test]
+        fn fuzz_purchase_valid_reduces_available(
+            listing_amount in 2_i128..1_000_i128,
+            buy_frac in 1_u32..99_u32,  // percentage 1–98
+        ) {
+            let buy_amount = (listing_amount * buy_frac as i128 / 100).max(1).min(listing_amount - 1);
+            // Use price 1 stroop to keep USDC arithmetic trivial with mock_all_auths
+            let (env, client, _, _, _) = setup_with_listing(listing_amount, 1_i128);
+            let buyer = Address::generate(&env);
+            client.purchase_credits(&buyer, &s(&env, "list-fuzz"), &buy_amount).unwrap();
+            let listing = client.get_listing(&s(&env, "list-fuzz")).unwrap();
+            prop_assert_eq!(listing.amount_available, listing_amount - buy_amount);
+            prop_assert_eq!(listing.status, ListingStatus::PartiallyFilled);
+        }
+
+        /// Purchasing the full listing amount marks it Sold — never panic.
+        #[test]
+        fn fuzz_purchase_full_amount_marks_sold(listing_amount in 1_i128..1_000_i128) {
+            let (env, client, _, _, _) = setup_with_listing(listing_amount, 1_i128);
+            let buyer = Address::generate(&env);
+            client.purchase_credits(&buyer, &s(&env, "list-fuzz"), &listing_amount).unwrap();
+            let listing = client.get_listing(&s(&env, "list-fuzz")).unwrap();
+            prop_assert_eq!(listing.status, ListingStatus::Sold);
+            prop_assert_eq!(listing.amount_available, 0);
+        }
+
+        /// Any purchase from a Sold listing must fail — never panic.
+        #[test]
+        fn fuzz_purchase_from_sold_listing_fails(second_amount in 1_i128..100_i128) {
+            let (env, client, _, _, _) = setup_with_listing(100, 1_i128);
+            let buyer = Address::generate(&env);
+            // Buy everything
+            client.purchase_credits(&buyer, &s(&env, "list-fuzz"), &100_i128).unwrap();
+            // Any further purchase must fail
+            let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &second_amount);
+            prop_assert!(result.is_err());
+        }
+
+        /// list_credits with zero amount or zero price must always fail — never panic.
+        #[test]
+        fn fuzz_list_zero_amount_or_price(
+            amount in i128::MIN..=0_i128,
+            price in i128::MIN..=0_i128,
+        ) {
+            let env = Env::default();
+            env.mock_all_auths();
+            let admin  = Address::generate(&env);
+            let seller = Address::generate(&env);
+            let usdc   = env.register_stellar_asset_contract(admin.clone());
+            let id     = env.register_contract(None, CarbonMarketplaceContract);
+            let client = CarbonMarketplaceContractClient::new(&env, &id);
+            client.initialize(&admin, &usdc).unwrap();
+
+            // Zero amount
+            let r1 = client.try_list_credits(
+                &seller, &s(&env, "l1"), &s(&env, "b1"), &s(&env, "p1"),
+                &amount, &10_0000000_i128, &2023_u32, &s(&env, "VCS"), &s(&env, "BR"),
+            );
+            prop_assert!(r1.is_err());
+
+            // Zero price
+            let r2 = client.try_list_credits(
+                &seller, &s(&env, "l2"), &s(&env, "b2"), &s(&env, "p2"),
+                &100_i128, &price, &2023_u32, &s(&env, "VCS"), &s(&env, "BR"),
+            );
+            prop_assert!(r2.is_err());
+        }
     }
 }

@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { APP_INTERCEPTOR } from "@nestjs/core";
 import { BullModule } from "@nestjs/bullmq";
 import { AuthModule } from "./auth/auth.module";
 import { ProjectsModule } from "./projects/projects.module";
@@ -8,11 +9,16 @@ import { MarketplaceModule } from "./marketplace/marketplace.module";
 import { OracleModule } from "./oracle/oracle.module";
 import { StatsModule } from "./stats/stats.module";
 import { QueueModule } from "./queue/queue.module";
-import { WebhookModule } from "./webhook/webhook.module";
+import { AuditModule } from "./audit/audit.module";
+import { MailModule } from "./mail/mail.module";
+import { ExportModule } from "./export/export.module";
+import { AuditInterceptor } from "./audit/audit.interceptor";
 import { PrismaService } from "./prisma.service";
 
 @Controller("health")
 class HealthController {
+  constructor(private readonly prisma: PrismaService) {}
+
   @Get()
   check() {
     return {
@@ -20,6 +26,11 @@ class HealthController {
       stellar_network: process.env.STELLAR_NETWORK || "testnet",
       timestamp: new Date().toISOString(),
     };
+  }
+
+  @Get("pool")
+  pool() {
+    return this.prisma.getPoolMetrics();
   }
 }
 
@@ -40,9 +51,15 @@ class HealthController {
     OracleModule,
     StatsModule,
     QueueModule,
-    WebhookModule,
+    UploadsModule,
   ],
   controllers: [HealthController],
-  providers: [PrismaService],
+  providers: [
+    PrismaService,
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: AuditInterceptor,
+    },
+  ],
 })
 export class AppModule {}
