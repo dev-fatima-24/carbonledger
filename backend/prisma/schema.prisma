@@ -25,6 +25,7 @@ model CarbonProject {
   metadataCid         String
   verifierAddress     String
   ownerAddress        String
+  methodologyScore    Int      @default(0)
   coordinates         Json?
   lastMonitoringAt    DateTime?
   createdAt           DateTime @default(now())
@@ -75,6 +76,9 @@ model RetirementRecord {
   vintageYear      Int
   serialNumbers    String[]
   txHash           String
+  certificateCid   String?  // IPFS CID for certificate content integrity verification
+  isValid          Boolean  @default(true)  // Invalid if CID mismatch detected
+  validatedAt      DateTime? // Last validation timestamp
   retiredAt        DateTime @default(now())
 
   batch   CreditBatch   @relation(fields: [batchId], references: [batchId])
@@ -128,10 +132,50 @@ model OracleUpdate {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  publicKey String   @unique
-  role      String   @default("corporation")
-  createdAt DateTime @default(now())
+  id           String   @id @default(cuid())
+  publicKey    String   @unique
+  email        String?  @unique
+  role         String   @default("corporation")
+  isSubscribed Boolean  @default(true)
+  createdAt    DateTime @default(now())
+}
+
+model EmailLog {
+  id        String    @id @default(cuid())
+  to        String
+  subject   String
+  template  String
+  status    String    @default("Pending") // Pending | Sent | Failed
+  error     String?
+  txHash    String?   // If related to a transaction
+  sentAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([to])
+  @@index([status])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  resourceId String?
+  ipAddress  String?
+  result     String?  // e.g., "Success", "Failure: <error>"
+  metadata   Json?    // Optional extra info
+  timestamp  DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([resourceId])
+  @@index([timestamp])
+}
+
+model SyncMetadata {
+  id                String   @id @default("singleton")
+  lastIndexedLedger Int      @default(0)
+  updatedAt         DateTime @updatedAt
 }
 
 model Job {

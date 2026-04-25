@@ -16,11 +16,15 @@ export class ProjectsController {
     @Query("methodology") methodology?: string,
     @Query("country")     country?: string,
     @Query("vintage")     vintage?: string,
+    @Query("cursor")      cursor?: string,
+    @Query("limit")       limit?: string,
   ) {
     return this.projectsService.findAll({
       methodology,
       country,
       vintage: vintage ? Number(vintage) : undefined,
+      cursor,
+      limit: limit ? Number(limit) : 20,
     });
   }
 

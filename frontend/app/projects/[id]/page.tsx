@@ -31,7 +31,7 @@ export default function ProjectDetailPage({ params }: { params: { id: string } }
     : 0;
 
   const provenanceEvents = [
-    { type: "registered" as const, label: "Project Registered", timestamp: project.createdAt, detail: `${project.methodology} · ${project.country}` },
+    { type: "registered" as const, label: "Project Registered", timestamp: project.createdAt, detail: `${project.methodology} · ${project.country} · Score: ${project.methodologyScore}` },
     ...(project.status !== "Pending" ? [{ type: "verified" as const, label: "Project Verified", timestamp: project.createdAt, detail: "Independently verified by accredited verifier" }] : []),
     ...(project.totalCreditsIssued > 0 ? [{ type: "minted" as const, label: "Credits Issued", timestamp: project.createdAt, detail: `${formatTonnes(project.totalCreditsIssued)} issued with unique serial numbers` }] : []),
   ];

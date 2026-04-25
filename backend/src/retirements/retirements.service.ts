@@ -1,31 +1,40 @@
-import { Injectable, NotFoundException, BadRequestException } from "@nestjs/common";
+import { Injectable, NotFoundException, BadRequestException, Logger } from "@nestjs/common";
 import { PrismaService } from "../prisma.service";
-import * as PDFDocument from "pdfkit";
-import { Parser } from "json2csv";
+import { IpfsService } from "../common/ipfs.service";
 
-export interface RetirementExportFilters {
-  methodology?: string;
-  country?: string;
-  vintageYear?: number;
-  startDate?: string;
-  endDate?: string;
-  beneficiary?: string;
-  minAmount?: number;
-  maxAmount?: number;
-  projectId?: string;
-  batchId?: string;
+export interface PaginatedRetirementsResponse {
+  retirements: any[];
+  next_cursor?: string;
+  total_count: number;
 }
 
 @Injectable()
 export class RetirementsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(RetirementsService.name);
 
-  async findAll(limit = 20) {
-    return this.prisma.retirementRecord.findMany({
-      include: { project: true, batch: true },
-      orderBy: { retiredAt: "desc" },
-      take: limit,
-    });
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly ipfsService: IpfsService,
+  ) {}
+
+  async findAll(cursor?: string, limit = 20): Promise<PaginatedRetirementsResponse> {
+    const take = Math.min(Math.max(limit, 1), 100);
+
+    const [retirements, total_count] = await Promise.all([
+      this.prisma.retirementRecord.findMany({
+        orderBy: { retiredAt: "desc" },
+        take: take + 1,
+        cursor: cursor ? { id: cursor } : undefined,
+        skip: cursor ? 1 : 0,
+      }),
+      this.prisma.retirementRecord.count(),
+    ]);
+
+    const hasMore = retirements.length > take;
+    const next_cursor = hasMore ? retirements[retirements.length - 2].id : undefined;
+    if (hasMore) retirements.pop();
+
+    return { retirements, next_cursor, total_count };
   }
 
   async findOne(retirementId: string) {
@@ -37,132 +46,75 @@ export class RetirementsService {
     return r;
   }
 
-  async findAllWithFilters(filters: RetirementExportFilters) {
-    const where: any = {
-      ...(filters.projectId && { projectId: filters.projectId }),
-      ...(filters.batchId && { batchId: filters.batchId }),
-      ...(filters.vintageYear && { vintageYear: filters.vintageYear }),
-      ...(filters.beneficiary && { beneficiary: { contains: filters.beneficiary, mode: "insensitive" } }),
-      ...(filters.minAmount !== undefined && { amount: { gte: filters.minAmount } }),
-      ...(filters.maxAmount !== undefined && { amount: { lte: filters.maxAmount } }),
-      ...(filters.startDate && { retiredAt: { gte: new Date(filters.startDate) } }),
-      ...(filters.endDate && { retiredAt: { lte: new Date(filters.endDate) } }),
-    };
+  /**
+   * Verify certificate content integrity against stored IPFS CID.
+   * Fetches certificate content and compares hash against stored CID.
+   * 
+   * @param retirementId The retirement record ID
+   * @param fetchedContent The certificate content fetched from IPFS
+   * @returns Verification result with status and details
+   */
+  async verifyCertificateIntegrity(retirementId: string, fetchedContent: Buffer | string) {
+    const retirement = await this.findOne(retirementId);
 
-    // Join with project to filter by methodology and country
-    if (filters.methodology || filters.country) {
-      where.project = {};
-      if (filters.methodology) (where.project as any).methodology = filters.methodology;
-      if (filters.country) (where.project as any).country = filters.country;
+    if (!retirement.certificateCid) {
+      throw new BadRequestException(
+        `Certificate for retirement ${retirementId} has no CID stored - cannot verify integrity`
+      );
     }
 
-    return this.prisma.retirementRecord.findMany({
-      where,
-      include: {
-        project: true,
-        batch: true,
-      },
-      orderBy: { retiredAt: "desc" },
-    });
-  }
+    try {
+      const isValid = this.ipfsService.verifyCidMatch(fetchedContent, retirement.certificateCid);
 
-  async exportCsv(filters: RetirementExportFilters): Promise<Buffer> {
-    const retirements = await this.findAllWithFilters(filters);
+      if (!isValid) {
+        // Mark certificate as invalid due to tampering detection
+        await this.prisma.retirementRecord.update({
+          where: { retirementId },
+          data: {
+            isValid: false,
+            validatedAt: new Date(),
+          },
+        });
 
-    const fields = [
-      { label: "Retirement ID", value: "retirementId" },
-      { label: "Retirement Date", value: "retiredAt" },
-      { label: "Beneficiary", value: "beneficiary" },
-      { label: "Amount (tonnes)", value: "amount" },
-      { label: "Project ID", value: "projectId" },
-      { label: "Project Name", value: (r: any) => r.project?.name || "" },
-      { label: "Methodology", value: (r: any) => r.project?.methodology || "" },
-      { label: "Country", value: (r: any) => r.project?.country || "" },
-      { label: "Vintage Year", value: "vintageYear" },
-      { label: "Batch ID", value: "batchId" },
-      { label: "Serial Numbers", value: (r: any) => r.serialNumbers?.join(";") || "" },
-      { label: "Transaction Hash", value: "txHash" },
-      { label: "Retirement Reason", value: "retirementReason" },
-    ];
+        this.logger.warn(
+          `SECURITY ALERT: Certificate tampering detected for retirement ${retirementId}. ` +
+          `Stored CID: ${retirement.certificateCid}, Content hash mismatch.`
+        );
 
-    const parser = new Parser({ fields });
-    const csv = parser.parse(retirements);
-    return Buffer.from(csv);
-  }
+        return {
+          valid: false,
+          retirementId,
+          message: "Certificate content integrity verification failed - tampering detected",
+          storedCid: retirement.certificateCid,
+        };
+      }
 
-  async exportPdf(filters: RetirementExportFilters): Promise<Buffer> {
-    const retirements = await this.findAllWithFilters(filters);
-    const doc = new PDFDocument({ size: "A4", layout: "landscape", margin: 40 });
+      // Update validation timestamp on success
+      await this.prisma.retirementRecord.update({
+        where: { retirementId },
+        data: {
+          validatedAt: new Date(),
+        },
+      });
 
-    const buffers: Buffer[] = [];
-    doc.on("data", buffers.push.bind(buffers));
-    doc.on("end", () => {});
-
-    // Title page
-    doc
-      .fontSize(22)
-      .text("ESG Carbon Retirement Report", { align: "center" })
-      .moveDown();
-
-    const totalTonnes = retirements.reduce((sum, r) => sum + r.amount, 0);
-
-    doc.fontSize(12).text(`Total Retirements: ${retirements.length}`, { align: "center" });
-    doc
-      .text(`Total Tonnes Retired: ${totalTonnes.toLocaleString()}`, { align: "center" })
-      .moveDown(2);
-
-    if (filters.startDate || filters.endDate) {
-      const dateRange = `${filters.startDate || "all"} to ${filters.endDate || "all"}`;
-      doc.text(`Date Range: ${dateRange}`, { align: "center" });
+      return {
+        valid: true,
+        retirementId,
+        message: "Certificate content integrity verified",
+        storedCid: retirement.certificateCid,
+      };
+    } catch (error) {
+      this.logger.error(
+        `Error verifying certificate integrity for ${retirementId}: ${error.message}`
+      );
+      throw new BadRequestException(
+        `Failed to verify certificate integrity: ${error.message}`
+      );
     }
-
-    doc
-      .moveDown()
-      .fontSize(10)
-      .text("All data is traceable to on-chain Stellar transaction hashes.", {
-        align: "center",
-      })
-      .text("Generated by CarbonLedger", { align: "center" })
-      .moveDown(2);
-
-    retirements.forEach((retirement, index) => {
-      if (index > 0) doc.addPage();
-
-      const explorerUrl = `https://stellar.expert/explorer/public/tx/${retirement.txHash}`;
-
-      doc
-        .fontSize(14)
-        .text(`Retirement ID: ${retirement.retirementId}`, { continued: true })
-        .fillColor("#666")
-        .text(` | Date: ${new Date(retirement.retiredAt).toLocaleDateString()}`, { fillColor: "black" })
-        .moveDown(1.5);
-
-      doc
-        .fontSize(12)
-        .text(`Beneficiary: ${retirement.beneficiary}`)
-        .text(`Project: ${retirement.project?.name || retirement.projectId}`)
-        .text(`Amount: ${retirement.amount.toLocaleString()} tonnes`)
-        .text(`Methodology: ${retirement.project?.methodology || "N/A"}`)
-        .text(`Country: ${retirement.project?.country || "N/A"}`)
-        .text(`Vintage Year: ${retirement.vintageYear}`)
-        .text(`Batch ID: ${retirement.batchId}`)
-        .text(`Serial Numbers: ${retirement.serialNumbers.join(", ")}`)
-        .text(`Retirement Reason: ${retirement.retirementReason}`)
-        .moveDown(1);
-
-      // Transaction hash with explorer URL
-      doc
-        .fontSize(9)
-        .fillColor("#0066cc")
-        .text(`Stellar Explorer: ${explorerUrl}`, { link: explorerUrl })
-        .fillColor("black");
-    });
-
-    doc.end();
-    return Buffer.concat(buffers);
   }
 
-  generatePdf(retirementId: string): Promise<Buffer> {
-    return this.findOne(retirementId).then(() => Buffer.from("Deprecated"));
+  async generatePdf(retirementId: string): Promise<Buffer> {
+    const retirement = await this.findOne(retirementId);
+    return Buffer.from(JSON.stringify(retirement));
   }
 }

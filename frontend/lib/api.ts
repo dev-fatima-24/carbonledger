@@ -17,6 +17,7 @@ export interface CarbonProject {
   totalCreditsIssued: number;
   totalCreditsRetired: number;
   metadataCid: string;
+  methodologyScore: number;
   createdAt: string;
 }
 
