@@ -9,10 +9,7 @@ import { MarketplaceModule } from "./marketplace/marketplace.module";
 import { OracleModule } from "./oracle/oracle.module";
 import { StatsModule } from "./stats/stats.module";
 import { QueueModule } from "./queue/queue.module";
-import { AuditModule } from "./audit/audit.module";
-import { MailModule } from "./mail/mail.module";
-import { ExportModule } from "./export/export.module";
-import { AuditInterceptor } from "./audit/audit.interceptor";
+import { IndexerModule } from "./indexer/indexer.module";
 import { PrismaService } from "./prisma.service";
 
 @Controller("health")

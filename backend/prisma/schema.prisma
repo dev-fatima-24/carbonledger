@@ -172,6 +172,12 @@ model AuditLog {
   @@index([timestamp])
 }
 
+model SyncMetadata {
+  id                String   @id @default("singleton")
+  lastIndexedLedger Int      @default(0)
+  updatedAt         DateTime @updatedAt
+}
+
 model Job {
   id          String    @id @default(cuid())
   queue       String
