@@ -295,6 +295,52 @@ impl CarbonRegistryContract {
         Ok(())
     }
 
+    /// Add a new verifier to the whitelist. Only callable by admin.
+    pub fn add_verifier(env: Env, admin: Address, verifier: Address) -> Result<(), CarbonError> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        let verifiers: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Verifiers)
+            .unwrap_or_else(|| vec![&env]);
+
+        if !verifiers.contains(&verifier) {
+            let new_verifiers = verifiers.push_back(verifier);
+            env.storage().persistent().set(&DataKey::Verifiers, &new_verifiers);
+        }
+
+        Ok(())
+    }
+
+    /// Remove a verifier from the whitelist. Only callable by admin.
+    pub fn remove_verifier(env: Env, admin: Address, verifier: Address) -> Result<(), CarbonError> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        let verifiers: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Verifiers)
+            .unwrap_or_else(|| vec![&env]);
+
+        if let Some(index) = verifiers.first_index_of(&verifier) {
+            let new_verifiers = verifiers.remove(index);
+            env.storage().persistent().set(&DataKey::Verifiers, &new_verifiers);
+        }
+
+        Ok(())
+    }
+
+    /// Get the list of whitelisted verifiers.
+    pub fn get_verifiers(env: Env) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Verifiers)
+            .unwrap_or_else(|| vec![&env])
+    }
+
     // ── Internal helpers ──────────────────────────────────────────────────────
 
     fn load_project(env: &Env, project_id: &String) -> Result<CarbonProject, CarbonError> {

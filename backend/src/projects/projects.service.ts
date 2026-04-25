@@ -1,10 +1,15 @@
 import { Injectable, NotFoundException, ConflictException } from "@nestjs/common";
 import { PrismaService } from "../prisma.service";
 import { RegisterProjectDto, UpdateProjectStatusDto, SearchProjectsDto, PaginatedProjectsResponse, ProjectStatus, OracleFreshness } from "./projects.dto";
+import { MailService } from "../mail/mail.service";
+import { MailEvent } from "../mail/mail.constants";
 
 @Injectable()
 export class ProjectsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly mailService: MailService,
+  ) {}
 
   async findAll(filters: { methodology?: string; country?: string; vintage?: number }) {
     return this.prisma.carbonProject.findMany({
@@ -147,10 +152,23 @@ export class ProjectsService {
 
   async verify(projectId: string, verifierPublicKey: string) {
     await this.findOne(projectId);
-    return this.prisma.carbonProject.update({
+    const updated = await this.prisma.carbonProject.update({
       where: { projectId },
       data:  { status: "Verified" },
     });
+
+    // Notify owner (assuming we can get email from user profile)
+    const owner = await this.prisma.user.findUnique({ where: { publicKey: updated.ownerAddress } });
+    if (owner && owner.email && owner.isSubscribed) {
+      await this.mailService.sendEmail(owner.email, MailEvent.PROJECT_APPROVED, {
+        projectName: updated.name,
+        projectId: updated.projectId,
+        projectLink: `${process.env.FRONTEND_URL}/projects/${updated.projectId}`,
+        to: owner.email,
+      });
+    }
+
+    return updated;
   }
 
   async reject(projectId: string, verifierPublicKey: string, reason: string) {

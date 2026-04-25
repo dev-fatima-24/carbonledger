@@ -124,10 +124,44 @@ model OracleUpdate {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  publicKey String   @unique
-  role      String   @default("corporation")
-  createdAt DateTime @default(now())
+  id           String   @id @default(cuid())
+  publicKey    String   @unique
+  email        String?  @unique
+  role         String   @default("corporation")
+  isSubscribed Boolean  @default(true)
+  createdAt    DateTime @default(now())
+}
+
+model EmailLog {
+  id        String    @id @default(cuid())
+  to        String
+  subject   String
+  template  String
+  status    String    @default("Pending") // Pending | Sent | Failed
+  error     String?
+  txHash    String?   // If related to a transaction
+  sentAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([to])
+  @@index([status])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  resourceId String?
+  ipAddress  String?
+  result     String?  // e.g., "Success", "Failure: <error>"
+  metadata   Json?    // Optional extra info
+  timestamp  DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([resourceId])
+  @@index([timestamp])
 }
 
 model Job {
