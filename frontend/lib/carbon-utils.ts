@@ -50,3 +50,6 @@ export function calculateCO2Equivalent(tonnes: number): {
 export function formatUSDC(stroops: bigint | number | string): string {
   return `$${formatStroops(stroops)} USDC`;
 }
+
+export { formatStroops };
+

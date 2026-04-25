@@ -19,6 +19,7 @@ model CarbonProject {
   projectType         String
   status              String   @default("Pending")
   vintageYear         Int
+  methodologyScore    Int
   totalCreditsIssued  Int      @default(0)
   totalCreditsRetired Int      @default(0)
   metadataCid         String
@@ -28,6 +29,7 @@ model CarbonProject {
   lastMonitoringAt    DateTime?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
+  ipfsFiles           IPFSFile[]
 
   batches     CreditBatch[]
   retirements RetirementRecord[]
@@ -58,6 +60,7 @@ model CreditBatch {
   project     CarbonProject      @relation(fields: [projectId], references: [projectId])
   retirements RetirementRecord[]
   listings    MarketListing[]
+  ipfsFiles   IPFSFile[]
 }
 
 model RetirementRecord {
@@ -76,6 +79,7 @@ model RetirementRecord {
 
   batch   CreditBatch   @relation(fields: [batchId], references: [batchId])
   project CarbonProject @relation(fields: [projectId], references: [projectId])
+  ipfsFiles IPFSFile[]
 }
 
 model MarketListing {
@@ -124,10 +128,44 @@ model OracleUpdate {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  publicKey String   @unique
-  role      String   @default("corporation")
-  createdAt DateTime @default(now())
+  id           String   @id @default(cuid())
+  publicKey    String   @unique
+  email        String?  @unique
+  role         String   @default("corporation")
+  isSubscribed Boolean  @default(true)
+  createdAt    DateTime @default(now())
+}
+
+model EmailLog {
+  id        String    @id @default(cuid())
+  to        String
+  subject   String
+  template  String
+  status    String    @default("Pending") // Pending | Sent | Failed
+  error     String?
+  txHash    String?   // If related to a transaction
+  sentAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([to])
+  @@index([status])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  resourceId String?
+  ipAddress  String?
+  result     String?  // e.g., "Success", "Failure: <error>"
+  metadata   Json?    // Optional extra info
+  timestamp  DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([resourceId])
+  @@index([timestamp])
 }
 
 model Job {
@@ -144,4 +182,27 @@ model Job {
 
   @@index([queue, status])
   @@index([type])
+}
+
+model IPFSFile {
+  id              String   @id @default(cuid())
+  cid             String
+  fileName        String
+  fileType        String   // "application/pdf" or "application/json"
+  fileSize        Int      // in bytes
+  pinStatus       String   @default("pending")  // pending | pinned | failed
+  linkedEntityType String?  // "project" | "certificate" | "batch"
+  linkedEntityId  String?  // ID of the linked entity
+  uploadedAt      DateTime @default(now())
+  pinnedAt        DateTime?
+
+  project         CarbonProject?  @relation(fields: [projectId], references: [id])
+  projectId       String?
+  batch           CreditBatch?    @relation(fields: [batchId], references: [id])
+  batchId         String?
+  retirement      RetirementRecord? @relation(fields: [retirementId], references: [id])
+  retirementId    String?
+
+  @@index([cid])
+  @@index([pinStatus])
 }
