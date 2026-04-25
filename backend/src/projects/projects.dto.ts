@@ -11,7 +11,7 @@ export class RegisterProjectDto {
   @IsString() metadataCid: string;
   @IsString() verifierAddress: string;
   @IsString() ownerAddress: string;
-  @IsInt() @Min(2000) @Max(2100) @Type(() => Number) vintageYear: number;
+  @IsInt() @Min(1990) @Max(2027) @Type(() => Number) vintageYear: number;
 }
 
 export class UpdateProjectStatusDto {

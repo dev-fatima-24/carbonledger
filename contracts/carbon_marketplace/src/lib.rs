@@ -85,6 +85,13 @@ pub struct CarbonMarketplaceContract;
 #[contractimpl]
 impl CarbonMarketplaceContract {
 
+    /// Returns the current year based on the ledger timestamp.
+    fn current_year(env: &Env) -> u32 {
+        let seconds_per_year: u64 = 31557600; // Approximate seconds in a year
+        let timestamp = env.ledger().timestamp();
+        1970 + (timestamp / seconds_per_year) as u32
+    }
+
     /// Initialise marketplace with admin and USDC token contract address.
     /// Can only be called once — subsequent calls return [`CarbonError::AlreadyInitialized`].
     pub fn initialize(env: Env, admin: Address, usdc_token: Address) -> Result<(), CarbonError> {
@@ -146,6 +153,14 @@ impl CarbonMarketplaceContract {
 
         if amount <= 0 || price_per_credit_usdc <= 0 {
             return Err(CarbonError::ZeroAmountNotAllowed);
+        }
+        if price_per_credit_usdc <= 0 {
+            return Err(CarbonError::ZeroAmountNotAllowed);
+        }
+
+        let current_year = Self::current_year(&env);
+        if vintage_year < 1990 || vintage_year > current_year + 1 {
+            return Err(CarbonError::InvalidVintageYear);
         }
 
         if env.storage().persistent().get::<DataKey, bool>(&DataKey::SuspendedProject(project_id.clone())).unwrap_or(false) {
