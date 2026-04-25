@@ -4,7 +4,7 @@ import { Type } from "class-transformer";
 export class MintCreditsDto {
   @IsString() batchId: string;
   @IsString() projectId: string;
-  @IsInt() @IsPositive() @Type(() => Number) vintageYear: number;
+  @IsInt() @Min(1990) @Max(2100) @Type(() => Number) vintageYear: number;
   @IsInt() @IsPositive() @Type(() => Number) amount: number;
   @IsString() serialStart: string;
   @IsString() serialEnd: string;
