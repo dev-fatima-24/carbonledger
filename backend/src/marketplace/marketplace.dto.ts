@@ -8,7 +8,7 @@ export class CreateListingDto {
   @IsString() seller: string;
   @IsInt() @IsPositive() @Type(() => Number) amountAvailable: number;
   @IsString() pricePerCredit: string;
-  @IsInt() @IsPositive() @Type(() => Number) vintageYear: number;
+  @IsInt() @Min(1990) @Max(2100) @Type(() => Number) vintageYear: number;
   @IsString() methodology: string;
   @IsString() country: string;
 }

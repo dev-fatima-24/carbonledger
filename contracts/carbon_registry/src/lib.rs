@@ -397,6 +397,24 @@ impl CarbonRegistryContract {
         Ok(())
     }
 
+    fn get_current_year(env: &Env) -> u32 {
+        let timestamp = env.ledger().timestamp();
+        let seconds_in_day = 86400;
+        let mut days = (timestamp / seconds_in_day) as i64;
+        let mut year = 1970;
+
+        loop {
+            let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+            let days_in_year = if is_leap { 366 } else { 365 };
+            if days < days_in_year {
+                break;
+            }
+            days -= days_in_year;
+            year += 1;
+        }
+        year as u32
+    }
+
     fn require_verifier(env: &Env, caller: &Address) -> Result<(), CarbonError> {
         let verifiers: Vec<Address> = env
             .storage()
