@@ -113,6 +113,8 @@ PROJECT DEVELOPER          CARBONLEDGER               CORPORATION
 └──────────────────────────────────────────────────────────────┘
 ```
 
+> Key architectural decisions are documented in [docs/adr/](docs/adr/). See the [ADR index](docs/adr/README.md) for the full list.
+
 ---
 
 ##  Smart Contracts
