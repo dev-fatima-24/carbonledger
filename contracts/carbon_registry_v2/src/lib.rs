@@ -31,6 +31,7 @@ pub enum CarbonError {
     ProjectAlreadyExists  = 17,
     InvalidSerialRange    = 18,
     UnauthorizedUpgrade   = 19, // New error for v2
+    Arithmetic            = 20,
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -270,7 +271,7 @@ impl CarbonRegistryContractV2 {
             return Err(CarbonError::InsufficientCredits);
         }
 
-        project.total_credits_retired += amount;
+        project.total_credits_retired = project.total_credits_retired.checked_add(amount).ok_or(CarbonError::Arithmetic)?;
         env.storage().persistent().set(&DataKey::Project(project_id.clone()), &project);
 
         env.events().publish(
@@ -310,7 +311,7 @@ impl CarbonRegistryContractV2 {
         oracle_address.require_auth();
         Self::require_oracle(&env, &oracle_address)?;
         let mut project = Self::load_project(&env, &project_id)?;
-        project.total_credits_issued += amount;
+        project.total_credits_issued = project.total_credits_issued.checked_add(amount).ok_or(CarbonError::Arithmetic)?;
         env.storage().persistent().set(&DataKey::Project(project_id), &project);
         Ok(())
     }

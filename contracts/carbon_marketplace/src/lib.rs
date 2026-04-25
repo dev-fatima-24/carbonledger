@@ -36,6 +36,7 @@ pub enum CarbonError {
     ProjectAlreadyExists   = 17,
     InvalidSerialRange     = 18,
     AlreadyInitialized     = 19,
+    Arithmetic             = 20,
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -250,11 +251,11 @@ impl CarbonMarketplaceContract {
         // amount are both large (e.g., price = i128::MAX / 2, amount = 2), total_cost
         // overflows and wraps to a small or negative value, allowing a buyer to purchase
         // credits for near-zero USDC. Fix: use checked_mul and return an error on overflow.
-        let total_cost = listing.price_per_credit * amount;
-        let protocol_fee = total_cost / 100; // 1%
-        let seller_proceeds = total_cost - protocol_fee;
+        let total_cost = listing.price_per_credit.checked_mul(amount).ok_or(CarbonError::Arithmetic)?;
+        let protocol_fee = total_cost.checked_div(100).ok_or(CarbonError::Arithmetic)?; // 1%
+        let seller_proceeds = total_cost.checked_sub(protocol_fee).ok_or(CarbonError::Arithmetic)?;
 
-        listing.amount_available -= amount;
+        listing.amount_available = listing.amount_available.checked_sub(amount).ok_or(CarbonError::Arithmetic)?;
         listing.status = if listing.amount_available == 0 {
             ListingStatus::Sold
         } else {
@@ -321,11 +322,11 @@ impl CarbonMarketplaceContract {
 
             // AUDIT-NOTE [HIGH]: Same unchecked i128 multiplication as purchase_credits.
             // Fix: use checked_mul.
-            let total_cost = listing.price_per_credit * amount;
-            let protocol_fee = total_cost / 100;
-            let seller_proceeds = total_cost - protocol_fee;
+            let total_cost = listing.price_per_credit.checked_mul(amount).ok_or(CarbonError::Arithmetic)?;
+            let protocol_fee = total_cost.checked_div(100).ok_or(CarbonError::Arithmetic)?;
+            let seller_proceeds = total_cost.checked_sub(protocol_fee).ok_or(CarbonError::Arithmetic)?;
 
-            listing.amount_available -= amount;
+            listing.amount_available = listing.amount_available.checked_sub(amount).ok_or(CarbonError::Arithmetic)?;
             listing.status = if listing.amount_available == 0 {
                 ListingStatus::Sold
             } else {
@@ -431,7 +432,7 @@ mod tests {
         let usdc   = env.register_stellar_asset_contract(admin.clone());
         let id     = env.register_contract(None, CarbonMarketplaceContract);
         let client = CarbonMarketplaceContractClient::new(env, &id);
-        client.initialize(&admin, &usdc).unwrap();
+        client.initialize(&admin, &usdc);
         (client, admin, seller, usdc)
     }
 
@@ -446,7 +447,7 @@ mod tests {
             &2023_u32,
             &s(env, "VCS"),
             &s(env, "Brazil"),
-        ).unwrap();
+        );
     }
 
     #[test]
@@ -454,7 +455,7 @@ mod tests {
         let env = Env::default();
         let (client, _, seller, _) = setup(&env);
         add_listing(&env, &client, &seller);
-        let l = client.get_listing(&s(&env, "list-001")).unwrap();
+        let l = client.get_listing(&s(&env, "list-001"));
         assert_eq!(l.status, ListingStatus::Active);
         assert_eq!(l.amount_available, 100);
     }
@@ -464,8 +465,8 @@ mod tests {
         let env = Env::default();
         let (client, _, seller, _) = setup(&env);
         add_listing(&env, &client, &seller);
-        client.delist_credits(&seller, &s(&env, "list-001")).unwrap();
-        let l = client.get_listing(&s(&env, "list-001")).unwrap();
+        client.delist_credits(&seller, &s(&env, "list-001"));
+        let l = client.get_listing(&s(&env, "list-001"));
         assert_eq!(l.status, ListingStatus::Delisted);
     }
 
@@ -530,7 +531,7 @@ mod tests {
     fn test_suspended_project_listing_blocked() {
         let env = Env::default();
         let (client, admin, seller, _) = setup(&env);
-        client.suspend_project(&admin, &s(&env, "proj-001")).unwrap();
+        client.suspend_project(&admin, &s(&env, "proj-001"));
         let result = client.try_list_credits(
             &seller,
             &s(&env, "list-001"),
@@ -552,7 +553,7 @@ mod tests {
         // List before suspending
         add_listing(&env, &client, &seller);
         // Suspend the project
-        client.suspend_project(&admin, &s(&env, "proj-001")).unwrap();
+        client.suspend_project(&admin, &s(&env, "proj-001"));
         let buyer = Address::generate(&env);
         let result = client.try_purchase_credits(&buyer, &s(&env, "list-001"), &10_i128);
         assert_eq!(result.unwrap_err().unwrap(), CarbonError::ProjectSuspended);
@@ -564,7 +565,29 @@ mod tests {
         let (client, _, seller, _) = setup(&env);
         // No suspension — listing should succeed
         add_listing(&env, &client, &seller);
-        let l = client.get_listing(&s(&env, "list-001")).unwrap();
+        let l = client.get_listing(&s(&env, "list-001"));
         assert_eq!(l.status, ListingStatus::Active);
+    }
+
+    #[test]
+    fn test_overflow_purchase_graceful_error() {
+        let env = Env::default();
+        let (client, _, seller, _) = setup(&env);
+
+        client.list_credits(
+            &seller,
+            &s(&env, "list-001"),
+            &s(&env, "batch-001"),
+            &s(&env, "proj-001"),
+            &10_i128,
+            &(i128::MAX / 2),
+            &2023_u32,
+            &s(&env, "VCS"),
+            &s(&env, "Brazil"),
+        );
+
+        let buyer = Address::generate(&env);
+        let result = client.try_purchase_credits(&buyer, &s(&env, "list-001"), &3_i128);
+        assert_eq!(result.unwrap_err().unwrap(), CarbonError::Arithmetic);
     }
 }
