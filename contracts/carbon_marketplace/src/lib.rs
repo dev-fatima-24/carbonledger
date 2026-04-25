@@ -31,6 +31,7 @@ pub enum CarbonError {
     ZeroAmountNotAllowed   = 16,
     ProjectAlreadyExists   = 17,
     InvalidSerialRange     = 18,
+    AlreadyInitialized     = 19,
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -81,12 +82,17 @@ pub struct CarbonMarketplaceContract;
 impl CarbonMarketplaceContract {
 
     /// Initialise marketplace with admin and USDC token contract address.
-    pub fn initialize(env: Env, admin: Address, usdc_token: Address) {
+    /// Can only be called once — subsequent calls return [`CarbonError::AlreadyInitialized`].
+    pub fn initialize(env: Env, admin: Address, usdc_token: Address) -> Result<(), CarbonError> {
+        if env.storage().persistent().has(&DataKey::Admin) {
+            return Err(CarbonError::AlreadyInitialized);
+        }
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::UsdcToken, &usdc_token);
         let listings: Vec<String> = vec![&env];
         env.storage().persistent().set(&DataKey::AllListings, &listings);
+        Ok(())
     }
 
     /// Mark a project as suspended in the marketplace. Only admin may call this.
@@ -384,7 +390,7 @@ mod tests {
         let usdc   = env.register_stellar_asset_contract(admin.clone());
         let id     = env.register_contract(None, CarbonMarketplaceContract);
         let client = CarbonMarketplaceContractClient::new(env, &id);
-        client.initialize(&admin, &usdc);
+        client.initialize(&admin, &usdc).unwrap();
         (client, admin, seller, usdc)
     }
 

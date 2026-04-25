@@ -10,6 +10,8 @@ jobs:
   contracts:
     name: Soroban Contract Tests
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 
@@ -24,16 +26,36 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            contracts/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('contracts/**/Cargo.lock') }}
+            carbonledger/contracts/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('carbonledger/contracts/**/Cargo.lock') }}
 
       - name: Run contract tests
-        working-directory: contracts
+        working-directory: carbonledger/contracts
         run: cargo test --workspace
 
       - name: Build WASM artifacts
-        working-directory: contracts
+        working-directory: carbonledger/contracts
         run: cargo build --target wasm32-unknown-unknown --release --workspace
+
+      - name: Report WASM sizes
+        if: github.event_name == 'pull_request'
+        working-directory: carbonledger/contracts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          REPORT="## 📦 WASM Size Report\n\n| Contract | Size |\n|---|---|\n"
+          for wasm in target/wasm32-unknown-unknown/release/*.wasm; do
+            name=$(basename "$wasm" .wasm)
+            size=$(du -sh "$wasm" | cut -f1)
+            bytes=$(wc -c < "$wasm")
+            REPORT="${REPORT}| \`${name}\` | ${size} (${bytes} bytes) |\n"
+          done
+          REPORT="${REPORT}\n> Built from commit \`${{ github.sha }}\`"
+          gh api repos/${REPO}/issues/${PR_NUMBER}/comments \
+            --method POST \
+            --field body="$(printf '%b' "$REPORT")"
 
   backend:
     name: NestJS Backend
@@ -61,20 +83,20 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: backend/package-lock.json
+          cache-dependency-path: carbonledger/backend/package-lock.json
 
       - name: Install dependencies
-        working-directory: backend
+        working-directory: carbonledger/backend
         run: npm ci
 
       - name: Validate Prisma schema
-        working-directory: backend
+        working-directory: carbonledger/backend
         env:
           DATABASE_URL: postgresql://carbonledger:testpassword@localhost:5432/carbonledger_test
         run: npx prisma validate
 
       - name: Run backend tests
-        working-directory: backend
+        working-directory: carbonledger/backend
         env:
           DATABASE_URL: postgresql://carbonledger:testpassword@localhost:5432/carbonledger_test
           JWT_SECRET: test-secret
@@ -91,22 +113,22 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: carbonledger/frontend/package-lock.json
 
       - name: Install dependencies
-        working-directory: frontend
+        working-directory: carbonledger/frontend
         run: npm ci
 
       - name: Type check
-        working-directory: frontend
+        working-directory: carbonledger/frontend
         run: npx tsc --noEmit || true
 
       - name: Run frontend tests
-        working-directory: frontend
+        working-directory: carbonledger/frontend
         run: npm test
 
       - name: Build
-        working-directory: frontend
+        working-directory: carbonledger/frontend
         env:
           NEXT_PUBLIC_API_URL: http://localhost:3001/api/v1
           NEXT_PUBLIC_STELLAR_NETWORK: testnet
@@ -124,11 +146,11 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        working-directory: oracle
+        working-directory: carbonledger/oracle
         run: pip install -r requirements.txt
 
       - name: Syntax check
-        working-directory: oracle
+        working-directory: carbonledger/oracle
         run: |
           python3 -m py_compile verification_listener.py
           python3 -m py_compile price_oracle.py
