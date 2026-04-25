@@ -5,6 +5,9 @@ on:
     branches: [main, develop]
   push:
     branches: [main]
+  schedule:
+    # Run fuzz suite every Sunday at 02:00 UTC
+    - cron: "0 2 * * 0"
 
 jobs:
   lint-dockerfiles:
@@ -257,3 +260,37 @@ jobs:
           python3 -m py_compile verification_listener.py
           python3 -m py_compile price_oracle.py
           python3 -m py_compile satellite_monitor.py
+
+  fuzz:
+    name: Property-Based Fuzz Tests
+    runs-on: ubuntu-latest
+    # Run on schedule (weekly) or when manually triggered; skip on normal PRs/pushes
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            carbonledger/contracts/target
+          key: ${{ runner.os }}-cargo-fuzz-${{ hashFiles('carbonledger/contracts/**/Cargo.lock') }}
+
+      - name: Run fuzz tests (carbon_credit)
+        working-directory: carbonledger/contracts
+        env:
+          PROPTEST_CASES: 1000
+        run: cargo test -p carbon_credit fuzz:: -- --nocapture
+
+      - name: Run fuzz tests (carbon_marketplace)
+        working-directory: carbonledger/contracts
+        env:
+          PROPTEST_CASES: 1000
+        run: cargo test -p carbon_marketplace fuzz:: -- --nocapture

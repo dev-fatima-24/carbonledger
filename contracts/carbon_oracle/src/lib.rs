@@ -31,6 +31,7 @@ pub enum CarbonError {
     ProjectAlreadyExists   = 17,
     InvalidSerialRange     = 18,
     AlreadyInitialized     = 19,
+    Arithmetic             = 20,
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -39,6 +40,13 @@ pub enum CarbonError {
 const MONITORING_FRESHNESS_SECS: u64 = 365 * 24 * 60 * 60;
 /// 24 hours in ledger TTL units (each ledger ~5 s → 17_280 ledgers/day).
 const PRICE_CACHE_TTL_LEDGERS: u32 = 17_280;
+
+/// Returns the current year based on the ledger timestamp.
+fn current_year(env: &Env) -> u32 {
+    let seconds_per_year: u64 = 31557600; // Approximate seconds in a year
+    let timestamp = env.ledger().timestamp();
+    1970 + (timestamp / seconds_per_year) as u32
+}
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
@@ -52,6 +60,190 @@ pub enum DataKey {
     OracleAddress,
     Admin,
 }
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MonitoringData {
+    pub project_id:        String,
+    pub period:            String,
+    pub tonnes_verified:   i128,
+    pub methodology_score: u32,
+    pub satellite_cid:     String,
+    pub submitted_by:      Address,
+    pub submitted_at:      u64,
+}
+
+// ── Contract ──────────────────────────────────────────────────────────────────
+
+#[contract]
+pub struct CarbonOracleContract;
+
+#[contractimpl]
+impl CarbonOracleContract {
+    /// Initialise oracle with admin and authorised oracle signer address.
+    ///
+    /// # Parameters
+    /// - `admin`: The address that will have administrative privileges
+    /// - `oracle_address`: The address authorized to submit monitoring data and prices
+    pub fn initialize(env: Env, admin: Address, oracle_address: Address) {
+        admin.require_auth();
+        env.storage().persistent().set(&DataKey::Admin, &admin);
+        env.storage().persistent().set(&DataKey::OracleAddress, &oracle_address);
+    }
+
+    /// Rotate the registered oracle address. Admin-only.
+    ///
+    /// # Errors
+    /// - [`CarbonError::UnauthorizedVerifier`] if caller is not the admin.
+    pub fn rotate_oracle(
+        env: Env,
+        admin: Address,
+        new_oracle: Address,
+    ) -> Result<(), CarbonError> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        env.storage().persistent().set(&DataKey::OracleAddress, &new_oracle);
+
+        env.events().publish(
+            (symbol_short!("c_ledger"), symbol_short!("ora_rot")),
+            (admin, new_oracle),
+        );
+        Ok(())
+    }
+
+    /// Authorised oracle submits satellite-verified monitoring data for a project period.
+    ///
+    /// # Parameters
+    /// - `oracle_signer`: The oracle's address authorizing the submission
+    /// - `project_id`: The project identifier
+    /// - `period`: Monitoring period (e.g., "2023-Q1")
+    /// - `tonnes_verified`: Amount of carbon tonnes verified
+    /// - `methodology_score`: Quality score of the methodology (0-100)
+    /// - `satellite_cid`: IPFS CID of satellite verification data
+    ///
+    /// # Errors
+    /// - [`CarbonError::UnauthorizedOracle`] if caller is not the registered oracle.
+    /// - [`CarbonError::ZeroAmountNotAllowed`] if `tonnes_verified` is zero.
+    /// - [`CarbonError::ProjectNotFound`] if any string input is empty or too long.
+    /// - [`CarbonError::InvalidVintageYear`] if methodology score is not in 0-100 range.
+    pub fn submit_monitoring_data(
+        env: Env,
+        oracle_signer: Address,
+        project_id: String,
+        period: String,
+        tonnes_verified: i128,
+        methodology_score: u32,
+        satellite_cid: String,
+    ) -> Result<(), CarbonError> {
+        // ── checks ────────────────────────────────────────────────────────────
+        oracle_signer.require_auth();
+        Self::require_oracle(&env, &oracle_signer)?;
+
+        // Validate string inputs (non-empty and reasonable length)
+        if project_id.is_empty() || project_id.chars().count() > 64 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+        if period.is_empty() || period.chars().count() > 32 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+        if satellite_cid.is_empty() || satellite_cid.chars().count() > 128 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+
+        // Validate numeric inputs
+        if tonnes_verified <= 0 {
+            return Err(CarbonError::ZeroAmountNotAllowed);
+        }
+        if methodology_score > 100 {
+            return Err(CarbonError::InvalidVintageYear); // Reusing error for score validation
+        }
+
+        // ── effects ───────────────────────────────────────────────────────────
+        let now = env.ledger().timestamp();
+        let data = MonitoringData {
+            project_id:        project_id.clone(),
+            period:            period.clone(),
+            tonnes_verified,
+            methodology_score,
+            satellite_cid:     satellite_cid.clone(),
+            submitted_by:      oracle_signer.clone(),
+            submitted_at:      now,
+        };
+
+        env.storage().persistent().set(
+            &DataKey::MonitoringData(project_id.clone(), period.clone()),
+            &data,
+        );
+        // Track latest submission timestamp for freshness checks
+        env.storage().persistent().set(&DataKey::LatestMonitoring(project_id.clone()), &now);
+
+        if methodology_score < 70 {
+            env.events().publish(
+                (symbol_short!("c_ledger"), symbol_short!("low_score")),
+                (project_id.clone(), methodology_score),
+            );
+        }
+
+        env.events().publish(
+            (symbol_short!("c_ledger"), symbol_short!("mon_data")),
+            (project_id, period, tonnes_verified, methodology_score),
+        );
+        Ok(())
+    }
+
+    /// Push updated benchmark price per methodology and vintage year.
+    /// Stored in temporary storage with 24-hour TTL.
+    ///
+    /// # Parameters
+    /// - `oracle_signer`: The oracle's address authorizing the update
+    /// - `methodology`: Carbon accounting methodology
+    /// - `vintage_year`: Year the credits were generated
+    /// - `price_usdc`: Price per credit in USDC stroops
+    ///
+    /// # Errors
+    /// - [`CarbonError::UnauthorizedOracle`] if caller is not the registered oracle.
+    /// - [`CarbonError::ProjectNotFound`] if any string input is empty or too long.
+    /// - [`CarbonError::InvalidVintageYear`] if vintage year is before 1990 or after current year + 1.
+    pub fn update_credit_price(
+        env: Env,
+        oracle_signer: Address,
+        methodology: String,
+        vintage_year: u32,
+        price_usdc: i128,
+    ) -> Result<(), CarbonError> {
+        // ── checks ────────────────────────────────────────────────────────────
+        oracle_signer.require_auth();
+        Self::require_oracle(&env, &oracle_signer)?;
+
+        // Validate string inputs
+        if methodology.is_empty() || methodology.chars().count() > 64 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+
+        // Validate numeric inputs
+        if price_usdc <= 0 {
+            return Err(CarbonError::ZeroAmountNotAllowed);
+        }
+
+        let current_year = Self::current_year(&env);
+        if vintage_year < 1990 || vintage_year > current_year + 1 {
+            return Err(CarbonError::InvalidVintageYear);
+        }
+
+        // ── effects ───────────────────────────────────────────────────────────
+        let key = DataKey::BenchmarkPrice(methodology.clone(), vintage_year);
+        env.storage().temporary().set(&key, &price_usdc);
+        env.storage().temporary().extend_ttl(&key, PRICE_CACHE_TTL_LEDGERS, PRICE_CACHE_TTL_LEDGERS);
+
+        env.events().publish(
+            (symbol_short!("c_ledger"), symbol_short!("price_upd")),
+            (methodology, vintage_year, price_usdc),
+        );
+        Ok(())
+    }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -126,7 +318,6 @@ impl CarbonOracleContract {
             &DataKey::MonitoringData(project_id.clone(), period.clone()),
             &data,
         );
-        // Track latest submission timestamp for freshness checks
         env.storage().persistent().set(&DataKey::LatestMonitoring(project_id.clone()), &now);
 
         if methodology_score < 70 {
@@ -163,6 +354,12 @@ impl CarbonOracleContract {
             return Err(CarbonError::ZeroAmountNotAllowed);
         }
 
+        // Enforce vintage year range: 1990 to current_year + 1
+        let current_year = Self::get_current_year(&env);
+        if vintage_year < 1990 || vintage_year > current_year + 1 {
+            return Err(CarbonError::InvalidVintageYear);
+        }
+
         // ── effects ───────────────────────────────────────────────────────────
         // AUDIT-NOTE [LOW]: No price deviation guard. A single oracle update can move
         // the benchmark price by any amount. The README specifies a 15% alert threshold
@@ -182,8 +379,15 @@ impl CarbonOracleContract {
 
     /// Returns monitoring data for a specific project and period.
     ///
+    /// # Parameters
+    /// - `project_id`: The project identifier
+    /// - `period`: Monitoring period
+    ///
+    /// # Returns
+    /// The monitoring data record
+    ///
     /// # Errors
-    /// - [`CarbonError::ProjectNotFound`] if no data exists for the given period.
+    /// - [`CarbonError::ProjectNotFound`] if no data exists for the given period
     pub fn get_monitoring_data(
         env: Env,
         project_id: String,
@@ -197,8 +401,15 @@ impl CarbonOracleContract {
 
     /// Returns the current benchmark price (in USDC stroops) for a methodology and vintage.
     ///
+    /// # Parameters
+    /// - `methodology`: Carbon accounting methodology
+    /// - `vintage_year`: Year the credits were generated
+    ///
+    /// # Returns
+    /// The benchmark price in USDC stroops
+    ///
     /// # Errors
-    /// - [`CarbonError::PriceNotSet`] if no price is cached or cache has expired.
+    /// - [`CarbonError::PriceNotSet`] if no price is cached or cache has expired
     pub fn get_benchmark_price(
         env: Env,
         methodology: String,
@@ -210,8 +421,12 @@ impl CarbonOracleContract {
             .ok_or(CarbonError::PriceNotSet)
     }
 
-    /// Flag a project for investigation. Emits an on-chain event that halts
-    /// new credit issuance until the flag is resolved.
+    /// Flag a project for investigation.
+    ///
+    /// # Parameters
+    /// - `oracle_signer`: The oracle's address authorizing the flag
+    /// - `project_id`: The project identifier to flag
+    /// - `reason`: Reason for flagging the project
     ///
     /// # Errors
     /// - [`CarbonError::UnauthorizedOracle`] if caller is not the registered oracle.
@@ -226,11 +441,9 @@ impl CarbonOracleContract {
         project_id: String,
         reason: String,
     ) -> Result<(), CarbonError> {
-        // ── checks ────────────────────────────────────────────────────────────
         oracle_signer.require_auth();
         Self::require_oracle(&env, &oracle_signer)?;
 
-        // ── effects ───────────────────────────────────────────────────────────
         env.storage().persistent().set(&DataKey::FlaggedProject(project_id.clone()), &reason);
 
         env.events().publish(
@@ -242,6 +455,12 @@ impl CarbonOracleContract {
 
     /// Returns `true` if monitoring data was submitted within the last 365 days.
     /// Returns `false` (stale) if no data exists or data is older than 365 days.
+    ///
+    /// # Parameters
+    /// - `project_id`: The project identifier
+    ///
+    /// # Returns
+    /// `true` if monitoring data is current, `false` if stale or missing
     pub fn is_monitoring_current(env: Env, project_id: String) -> bool {
         let latest: Option<u64> = env
             .storage()
@@ -270,6 +489,24 @@ impl CarbonOracleContract {
         }
         Ok(())
     }
+
+    fn get_current_year(env: &Env) -> u32 {
+        let timestamp = env.ledger().timestamp();
+        let seconds_in_day = 86400;
+        let mut days = (timestamp / seconds_in_day) as i64;
+        let mut year = 1970;
+
+        loop {
+            let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+            let days_in_year = if is_leap { 366 } else { 365 };
+            if days < days_in_year {
+                break;
+            }
+            days -= days_in_year;
+            year += 1;
+        }
+        year as u32
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -287,7 +524,7 @@ mod tests {
         let oracle = Address::generate(env);
         let id     = env.register_contract(None, CarbonOracleContract);
         let client = CarbonOracleContractClient::new(env, &id);
-        client.initialize(&admin, &oracle).unwrap();
+        client.initialize(&admin, &oracle);
         (client, admin, oracle)
     }
 
@@ -303,9 +540,9 @@ mod tests {
             &5000_i128,
             &85_u32,
             &s(&env, "QmSatCID"),
-        ).unwrap();
+        );
 
-        let data = client.get_monitoring_data(&s(&env, "proj-001"), &s(&env, "2023-Q1")).unwrap();
+        let data = client.get_monitoring_data(&s(&env, "proj-001"), &s(&env, "2023-Q1"));
         assert_eq!(data.tonnes_verified, 5000);
         assert_eq!(data.methodology_score, 85);
     }
@@ -328,12 +565,64 @@ mod tests {
     }
 
     #[test]
+    fn test_unauthorized_price_update_rejected() {
+        let env = Env::default();
+        let (client, _, _) = setup(&env);
+        let rogue = Address::generate(&env);
+
+        let result = client.try_update_credit_price(&rogue, &s(&env, "VCS"), &2023_u32, &15_0000000_i128);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rotate_oracle_admin_only() {
+        let env = Env::default();
+        let (client, admin, old_oracle) = setup(&env);
+        let new_oracle = Address::generate(&env);
+
+        // Admin can rotate
+        client.rotate_oracle(&admin, &new_oracle).unwrap();
+
+        // Old oracle is now rejected
+        let result = client.try_submit_monitoring_data(
+            &old_oracle,
+            &s(&env, "proj-001"),
+            &s(&env, "2023-Q1"),
+            &1000_i128,
+            &80_u32,
+            &s(&env, "QmCID"),
+        );
+        assert!(result.is_err());
+
+        // New oracle is accepted
+        client.submit_monitoring_data(
+            &new_oracle,
+            &s(&env, "proj-001"),
+            &s(&env, "2023-Q1"),
+            &1000_i128,
+            &80_u32,
+            &s(&env, "QmCID"),
+        ).unwrap();
+    }
+
+    #[test]
+    fn test_rotate_oracle_non_admin_rejected() {
+        let env = Env::default();
+        let (client, _, _) = setup(&env);
+        let attacker   = Address::generate(&env);
+        let new_oracle = Address::generate(&env);
+
+        let result = client.try_rotate_oracle(&attacker, &new_oracle);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_benchmark_price_update() {
         let env = Env::default();
         let (client, _, oracle) = setup(&env);
 
-        client.update_credit_price(&oracle, &s(&env, "VCS"), &2023_u32, &15_0000000_i128).unwrap();
-        let price = client.get_benchmark_price(&s(&env, "VCS"), &2023_u32).unwrap();
+        client.update_credit_price(&oracle, &s(&env, "VCS"), &2023_u32, &15_0000000_i128);
+        let price = client.get_benchmark_price(&s(&env, "VCS"), &2023_u32);
         assert_eq!(price, 15_0000000_i128);
     }
 
@@ -349,8 +638,7 @@ mod tests {
     fn test_flag_project() {
         let env = Env::default();
         let (client, _, oracle) = setup(&env);
-
-        client.flag_project(&oracle, &s(&env, "proj-001"), &s(&env, "satellite contradiction")).unwrap();
+        client.flag_project(&oracle, &s(&env, "proj-001"), &s(&env, "satellite contradiction"));
         // Verify event was emitted (no error = success)
     }
 
@@ -359,7 +647,6 @@ mod tests {
         let env = Env::default();
         let (client, _, oracle) = setup(&env);
 
-        // Submit monitoring data at timestamp 0
         env.ledger().set(LedgerInfo {
             timestamp: 1_000_000,
             protocol_version: 20,
@@ -378,9 +665,8 @@ mod tests {
             &1000_i128,
             &80_u32,
             &s(&env, "QmCID"),
-        ).unwrap();
+        );
 
-        // Advance time by 366 days
         env.ledger().set(LedgerInfo {
             timestamp: 1_000_000 + (366 * 24 * 60 * 60),
             protocol_version: 20,
@@ -407,7 +693,7 @@ mod tests {
             &1000_i128,
             &80_u32,
             &s(&env, "QmCID"),
-        ).unwrap();
+        );
 
         assert!(client.is_monitoring_current(&s(&env, "proj-001")));
     }
@@ -420,7 +706,7 @@ mod tests {
         let oracle = Address::generate(&env);
         let id     = env.register_contract(None, CarbonOracleContract);
         let client = CarbonOracleContractClient::new(&env, &id);
-        client.initialize(&admin, &oracle).unwrap();
+        client.initialize(&admin, &oracle);
         let result = client.try_initialize(&admin, &oracle);
         assert!(result.is_err());
     }
