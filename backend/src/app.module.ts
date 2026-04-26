@@ -34,11 +34,20 @@ class HealthController {
 @Module({
   imports: [
     BullModule.forRoot({
-      connection: {
-        host: process.env.REDIS_HOST || "localhost",
-        port: parseInt(process.env.REDIS_PORT || "6379"),
-        password: process.env.REDIS_PASSWORD || undefined,
-      },
+      connection: process.env.REDIS_SENTINELS
+        ? {
+            sentinels: process.env.REDIS_SENTINELS.split(",").map((s) => {
+              const [host, port] = s.split(":");
+              return { host, port: parseInt(port || "26379") };
+            }),
+            name: process.env.REDIS_SENTINEL_NAME || "mymaster",
+            password: process.env.REDIS_PASSWORD || undefined,
+          }
+        : {
+            host: process.env.REDIS_HOST || "localhost",
+            port: parseInt(process.env.REDIS_PORT || "6379"),
+            password: process.env.REDIS_PASSWORD || undefined,
+          },
     }),
     AuthModule,
     ProjectsModule,

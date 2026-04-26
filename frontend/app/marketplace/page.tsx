@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import { useListings } from "../../lib/api";
 import { formatStroops, formatTonnes } from "../../lib/carbon-utils";
 import { colors } from "../../styles/design-system";
@@ -9,9 +10,17 @@ import MarketplaceFilter, { FilterState } from "../../components/MarketplaceFilt
 import LoadingSkeleton from "../../components/LoadingSkeleton";
 
 export default function MarketplacePage() {
+  const searchParams = useSearchParams();
   const [filters, setFilters] = useState<FilterState>({
     methodology: "", vintageYear: "", country: "", minPrice: "", maxPrice: "",
   });
+
+  useEffect(() => {
+    const vintage = searchParams.get("vintage");
+    if (vintage) {
+      setFilters((prev) => ({ ...prev, vintageYear: vintage }));
+    }
+  }, [searchParams]);
 
   const { data: listings, isLoading } = useListings({
     methodology: filters.methodology || undefined,
