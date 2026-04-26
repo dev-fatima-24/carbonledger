@@ -89,6 +89,12 @@ export interface PlatformStats {
   marketplaceVolume: string;
 }
 
+export interface LeaderboardEntry {
+  rank: number;
+  beneficiary: string;
+  totalTonnes: number;
+}
+
 // ── Fetcher ───────────────────────────────────────────────────────────────────
 
 async function fetcher<T>(url: string): Promise<T> {
@@ -144,6 +150,14 @@ export function useOracleStatus(projectId: string) {
 
 export function usePlatformStats() {
   return useSWR<PlatformStats>(`${API_URL}/stats`, fetcher, {
+    ...swrConfig,
+    refreshInterval: 30_000,
+  });
+}
+
+export function useLeaderboard(year?: number) {
+  const url = year ? `${API_URL}/stats/leaderboard?year=${year}` : `${API_URL}/stats/leaderboard`;
+  return useSWR<LeaderboardEntry[]>(url, fetcher, {
     ...swrConfig,
     refreshInterval: 30_000,
   });
