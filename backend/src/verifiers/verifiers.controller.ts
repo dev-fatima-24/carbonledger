@@ -1,5 +1,6 @@
 import { Controller, Get, Post, Patch, Param, Body, Query, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { Roles, RolesGuard } from '../auth/roles.guard';
 import { VerifiersService } from './verifiers.service';
 import { ApplyVerifierDto, ReviewVerifierDto } from './verifiers.dto';
 
@@ -29,7 +30,8 @@ export class VerifiersController {
 
   /** PATCH /api/v1/verifiers/:id/review — admin approves or rejects */
   @Patch(':id/review')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
   review(@Param('id') id: string, @Body() dto: ReviewVerifierDto) {
     return this.verifiersService.review(id, dto);
   }

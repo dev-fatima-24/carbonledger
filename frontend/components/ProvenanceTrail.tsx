@@ -3,7 +3,7 @@
 import { colors } from "../styles/design-system";
 
 interface ProvenanceEvent {
-  type: "registered" | "verified" | "minted" | "listed" | "purchased" | "retired";
+  type: "registered" | "verified" | "minted" | "listed" | "purchased" | "transferred" | "retired";
   label: string;
   timestamp: string;
   actor?: string;
@@ -21,6 +21,7 @@ const eventConfig: Record<ProvenanceEvent["type"], { icon: string; color: string
   minted:     { icon: "🌱", color: colors.primary[700] },
   listed:     { icon: "🏪", color: "#2563eb" },
   purchased:  { icon: "💼", color: "#7c3aed" },
+  transferred:{ icon: "↔️", color: "#0891b2" },
   retired:    { icon: "🔒", color: colors.primary[800] },
 };
 

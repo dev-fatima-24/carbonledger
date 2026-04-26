@@ -97,14 +97,18 @@ export default function BuyPage() {
             borderRadius: "0.75rem", padding: "1.25rem",
           }}>
             <label style={{ fontSize: "0.875rem", fontWeight: 600, color: colors.neutral[700], display: "block", marginBottom: "0.5rem" }}>
-              Amount (tonnes CO₂e)
+              Amount (tonnes CO₂e) — minimum 0.01 tCO₂e
             </label>
             <input
               type="number"
-              min={1}
+              min={0.01}
               max={listing.amountAvailable}
+              step={0.01}
               value={amount}
-              onChange={e => setAmount(Math.max(1, Math.min(listing.amountAvailable, Number(e.target.value))))}
+              onChange={e => {
+                const v = parseFloat(parseFloat(e.target.value).toFixed(2));
+                setAmount(Math.max(0.01, Math.min(listing.amountAvailable, v || 0.01)));
+              }}
               style={{
                 width: "100%", border: `1px solid ${colors.neutral[300]}`,
                 borderRadius: "0.5rem", padding: "0.75rem 1rem",

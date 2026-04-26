@@ -1,6 +1,7 @@
-"use client";
+'use client';
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import { useListings } from "../../lib/api";
 import { formatStroops, formatTonnes } from "../../lib/carbon-utils";
 import { colors } from "../../styles/design-system";
@@ -9,9 +10,17 @@ import MarketplaceFilter, { FilterState } from "../../components/MarketplaceFilt
 import LoadingSkeleton from "../../components/LoadingSkeleton";
 
 export default function MarketplacePage() {
+  const searchParams = useSearchParams();
   const [filters, setFilters] = useState<FilterState>({
     methodology: "", vintageYear: "", country: "", minPrice: "", maxPrice: "",
   });
+
+  useEffect(() => {
+    const vintage = searchParams.get("vintage");
+    if (vintage) {
+      setFilters((prev) => ({ ...prev, vintageYear: vintage }));
+    }
+  }, [searchParams]);
 
   const { data: listings, isLoading } = useListings({
     methodology: filters.methodology || undefined,
@@ -21,46 +30,81 @@ export default function MarketplacePage() {
     maxPrice:    filters.maxPrice    || undefined,
   });
 
-  return (
-    <div style={{ maxWidth: "1200px", margin: "0 auto", padding: "2.5rem 2rem" }}>
-      <div style={{ marginBottom: "2rem" }}>
-        <h1 style={{ fontSize: "2rem", fontWeight: 800, color: colors.neutral[900], margin: "0 0 0.5rem" }}>
-          Carbon Credit Marketplace
+  if (isMobile) {
+    return (
+      <div className="container" style={{ padding: '16px' }}>
+        <h1 className="text-center" style={{ fontSize: '24px', marginBottom: '20px' }}>
+          Carbon Marketplace
         </h1>
-        <p style={{ color: colors.neutral[500], margin: 0 }}>
-          All credits are from verified projects with full satellite monitoring. Prices in USDC.
-        </p>
-      </div>
-
-      <div style={{ marginBottom: "1.5rem" }}>
-        <MarketplaceFilter filters={filters} onChange={setFilters} />
-      </div>
-
-      {isLoading ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "1.5rem" }}>
-          {Array.from({ length: 9 }).map((_, i) => <LoadingSkeleton key={i} variant="CreditCard" />)}
-        </div>
-      ) : (
-        <>
-          <p style={{ fontSize: "0.875rem", color: colors.neutral[500], marginBottom: "1rem" }}>
-            {listings?.length ?? 0} listings available
-          </p>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "1.5rem" }}>
-            {(listings ?? []).map(l => (
-              <CreditCard
-                key={l.listingId}
-                listing={l}
-                onBuy={() => window.location.href = `/buy?listing=${l.listingId}`}
-              />
-            ))}
-          </div>
-          {listings?.length === 0 && (
-            <div style={{ textAlign: "center", padding: "4rem", color: colors.neutral[400] }}>
-              No listings match your filters.
+        
+        <div className="mobile-card-container">
+          {listings.map((item) => (
+            <div key={item.id} className="mobile-card">
+              <div className="mobile-card-title">{item.project}</div>
+              <div className="mobile-card-row">
+                <span className="mobile-card-label">Amount (tons)</span>
+                <span className="mobile-card-value">{item.amount}</span>
+              </div>
+              <div className="mobile-card-row">
+                <span className="mobile-card-label">Price</span>
+                <span className="mobile-card-value">{item.price}</span>
+              </div>
+              <div className="mobile-card-row">
+                <span className="mobile-card-label">Location</span>
+                <span className="mobile-card-value">{item.location}</span>
+              </div>
+              <button
+                style={{
+                  width: '100%',
+                  marginTop: '12px',
+                  backgroundColor: '#3b82f6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  minHeight: '44px',
+                  cursor: 'pointer'
+                }}
+              >
+                Purchase
+              </button>
             </div>
-          )}
-        </>
-      )}
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="container" style={{ padding: '24px' }}>
+      <h1 style={{ fontSize: '32px', marginBottom: '24px' }}>Carbon Marketplace</h1>
+      <div className="table-responsive">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Project</th>
+              <th>Amount (tons)</th>
+              <th>Price</th>
+              <th>Location</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {listings.map((item) => (
+              <tr key={item.id}>
+                <td>{item.project}</td>
+                <td>{item.amount}</td>
+                <td>{item.price}</td>
+                <td>{item.location}</td>
+                <td>
+                  <button style={{ padding: '8px 16px', minHeight: '44px' }}>
+                    Purchase
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

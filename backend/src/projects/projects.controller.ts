@@ -1,7 +1,8 @@
-import { Controller, Get, Post, Patch, Param, Body, Query, UseGuards } from "@nestjs/common";
+import { Controller, Get, Post, Patch, Param, Body, Query, UseGuards, Request } from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
 import { ProjectsService } from "./projects.service";
 import { RegisterProjectDto, UpdateProjectStatusDto, SearchProjectsDto } from "./projects.dto";
+import { Roles, RolesGuard } from "../auth/roles.guard";
 import { IsString, IsOptional } from "class-validator";
 
 class VerifyDto { @IsString() verifierPublicKey: string; }
@@ -19,9 +20,12 @@ export class ProjectsController {
     @Query("cursor")      cursor?: string,
     @Query("limit")       limit?: string,
   ) {
+    // Sanitize: reject non-string values (e.g. operator injection via ?methodology[$ne]=VCS)
+    const safeMethodology = typeof methodology === "string" ? methodology : undefined;
+    const safeCountry     = typeof country     === "string" ? country     : undefined;
     return this.projectsService.findAll({
-      methodology,
-      country,
+      methodology: safeMethodology,
+      country:     safeCountry,
       vintage: vintage ? Number(vintage) : undefined,
       cursor,
       limit: limit ? Number(limit) : 20,
@@ -39,25 +43,29 @@ export class ProjectsController {
   }
 
   @Post("register")
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), RolesGuard)
+  @Roles("project_developer", "admin")
   register(@Body() dto: RegisterProjectDto) {
     return this.projectsService.register(dto);
   }
 
   @Patch(":id/status")
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), RolesGuard)
+  @Roles("admin")
   updateStatus(@Param("id") id: string, @Body() dto: UpdateProjectStatusDto) {
     return this.projectsService.updateStatus(id, dto);
   }
 
   @Post(":id/verify")
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), RolesGuard)
+  @Roles("verifier", "admin")
   verify(@Param("id") id: string, @Body() dto: VerifyDto) {
     return this.projectsService.verify(id, dto.verifierPublicKey);
   }
 
   @Post(":id/reject")
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), RolesGuard)
+  @Roles("verifier", "admin")
   reject(@Param("id") id: string, @Body() dto: RejectDto) {
     return this.projectsService.reject(id, dto.verifierPublicKey, dto.reason);
   }

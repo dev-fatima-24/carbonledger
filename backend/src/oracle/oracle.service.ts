@@ -1,14 +1,17 @@
 import { Injectable } from "@nestjs/common";
 import { PrismaService } from "../prisma.service";
-import { IsString, IsInt, IsPositive, Min, Max, Length } from "class-validator";
+import { IsString, IsInt, IsPositive, Min, Max, Length, Matches, IsNumber } from "class-validator";
 import { Type } from "class-transformer";
+
+// Valid IPFS CID: CIDv0 (Qm...) or CIDv1 (bafy...) — rejects URLs and arbitrary strings
+const CID_REGEX = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{58,})$/;
 
 export class SubmitMonitoringDto {
   @IsString() @Length(1, 64) projectId: string;
   @IsString() @Length(1, 32) period: string;
   @IsInt() @IsPositive() @Type(() => Number) tonnesVerified: number;
   @IsInt() @Min(0) @Max(100) @Type(() => Number) methodologyScore: number;
-  @IsString() @Length(1, 128) satelliteCid: string;
+  @IsString() @Matches(CID_REGEX, { message: "satelliteCid must be a valid IPFS CID (CIDv0 or CIDv1)" }) satelliteCid: string;
   @IsString() submittedBy: string;
 }
 
