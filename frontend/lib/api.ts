@@ -149,9 +149,51 @@ export function usePlatformStats() {
   });
 }
 
+export interface ProvenanceEvent {
+  type: "registered" | "verified" | "minted" | "listed" | "purchased" | "transferred" | "retired";
+  label: string;
+  timestamp: string;
+  actor?: string;
+  txHash?: string;
+  detail?: string;
+}
+
+export interface SerialLookupResult {
+  serialNumber: string;
+  batchId: string;
+  projectId: string;
+  projectName?: string;
+  vintageYear: number;
+  methodology?: string;
+  country?: string;
+  currentOwner?: string;
+  status: "active" | "retired";
+  // Retirement fields (present when status === "retired")
+  retirementId?: string;
+  beneficiary?: string;
+  retirementReason?: string;
+  retiredAt?: string;
+  txHash?: string;
+  // Chain of custody
+  provenance: ProvenanceEvent[];
+}
+
 export function useSerialLookup(serial: string) {
   return useSWR<RetirementRecord | CreditBatch>(
     serial ? `${API_URL}/credits/lookup/${serial}` : null,
+    fetcher,
+    swrConfig,
+  );
+}
+
+export function useSerialRangeLookup(start: string, end: string) {
+  const key = start && end ? `${API_URL}/credits/lookup?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}` : null;
+  return useSWR<SerialLookupResult[]>(key, fetcher, swrConfig);
+}
+
+export function useSerialSingleLookup(serial: string) {
+  return useSWR<SerialLookupResult>(
+    serial ? `${API_URL}/credits/lookup/${encodeURIComponent(serial)}` : null,
     fetcher,
     swrConfig,
   );
