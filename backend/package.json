@@ -10,7 +10,7 @@
     "test": "jest --passWithNoTests"
   },
   "dependencies": {
-    "@nestjs/bullmq": "^10.2.1",
+    "@nestjs/bullmq": "^11.0.4",
     "@nestjs/common": "^11.1.19",
     "@nestjs/core": "^10.0.0",
     "@nestjs/jwt": "^10.2.0",
