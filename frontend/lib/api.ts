@@ -26,6 +26,7 @@ export interface CreditBatch {
   batchId: string;
   projectId: string;
   vintageYear: number;
+  /** Fractional tonnes supported, e.g. 0.5 tCO₂e. Minimum 0.01. */
   amount: number;
   serialStart: string;
   serialEnd: string;
@@ -41,6 +42,7 @@ export interface MarketListing {
   projectName: string;
   batchId: string;
   seller: string;
+  /** Fractional tonnes supported, e.g. 0.5 tCO₂e. Minimum 0.01. */
   amountAvailable: number;
   pricePerCredit: string;
   vintageYear: number;
@@ -56,6 +58,7 @@ export interface RetirementRecord {
   batchId: string;
   projectId: string;
   projectName?: string;
+  /** Fractional tonnes supported, e.g. 0.5 tCO₂e. */
   amount: number;
   retiredBy: string;
   beneficiary: string;
@@ -160,6 +163,7 @@ export function useSerialLookup(serial: string) {
 // ── Mutations ─────────────────────────────────────────────────────────────────
 
 export async function purchaseCredits(listingId: string, amount: number, buyerPublicKey: string) {
+  if (amount < 0.01) throw new Error("Minimum purchase is 0.01 tCO₂e");
   const res = await fetch(`${API_URL}/marketplace/purchase`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -176,6 +180,7 @@ export async function retireCredits(payload: {
   retirementReason: string;
   holderPublicKey: string;
 }) {
+  if (payload.amount < 0.01) throw new Error("Minimum retirement is 0.01 tCO₂e");
   const res = await fetch(`${API_URL}/credits/retire`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

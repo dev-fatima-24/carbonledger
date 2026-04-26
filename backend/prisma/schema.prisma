@@ -20,8 +20,8 @@ model CarbonProject {
   status              String   @default("Pending")
   vintageYear         Int
   methodologyScore    Int
-  totalCreditsIssued  Int      @default(0)
-  totalCreditsRetired Int      @default(0)
+  totalCreditsIssued  Decimal  @default(0) @db.Decimal(18, 2)
+  totalCreditsRetired Decimal  @default(0) @db.Decimal(18, 2)
   metadataCid         String
   verifierAddress     String
   ownerAddress        String
@@ -51,7 +51,7 @@ model CreditBatch {
   batchId     String   @unique
   projectId   String
   vintageYear Int
-  amount      Int
+  amount      Decimal  @db.Decimal(18, 2)
   serialStart String
   serialEnd   String
   status      String   @default("Active")
@@ -69,16 +69,16 @@ model RetirementRecord {
   retirementId     String   @unique
   batchId          String
   projectId        String
-  amount           Int
+  amount           Decimal  @db.Decimal(18, 2)
   retiredBy        String
   beneficiary      String
   retirementReason String
   vintageYear      Int
   serialNumbers    String[]
   txHash           String
-  certificateCid   String?  // IPFS CID for certificate content integrity verification
-  isValid          Boolean  @default(true)  // Invalid if CID mismatch detected
-  validatedAt      DateTime? // Last validation timestamp
+  certificateCid   String?
+  isValid          Boolean  @default(true)
+  validatedAt      DateTime?
   retiredAt        DateTime @default(now())
 
   batch   CreditBatch   @relation(fields: [batchId], references: [batchId])
@@ -92,7 +92,7 @@ model MarketListing {
   projectId       String
   batchId         String
   seller          String
-  amountAvailable Int
+  amountAvailable Decimal  @db.Decimal(18, 2)
   pricePerCredit  String
   vintageYear     Int
   methodology     String
@@ -109,7 +109,7 @@ model MonitoringData {
   id               String   @id @default(cuid())
   projectId        String
   period           String
-  tonnesVerified   Int
+  tonnesVerified   Decimal  @db.Decimal(18, 2)
   methodologyScore Int
   satelliteCid     String
   submittedBy      String

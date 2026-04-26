@@ -1,4 +1,4 @@
-import { IsString, IsInt, IsPositive, IsOptional, Min, Max } from "class-validator";
+import { IsString, IsInt, IsNumber, IsPositive, IsOptional, Min, Max } from "class-validator";
 import { Type } from "class-transformer";
 
 export class CreateListingDto {
@@ -6,7 +6,8 @@ export class CreateListingDto {
   @IsString() projectId: string;
   @IsString() batchId: string;
   @IsString() seller: string;
-  @IsInt() @IsPositive() @Type(() => Number) amountAvailable: number;
+  /** Supports fractional tonnes, e.g. 0.5. Minimum 0.01 tCO₂e. */
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(0.01) @Type(() => Number) amountAvailable: number;
   @IsString() pricePerCredit: string;
   @IsInt() @Min(1990) @Max(2100) @Type(() => Number) vintageYear: number;
   @IsString() methodology: string;
@@ -15,13 +16,14 @@ export class CreateListingDto {
 
 export class PurchaseDto {
   @IsString() listingId: string;
-  @IsInt() @IsPositive() @Type(() => Number) amount: number;
+  /** Supports fractional tonnes, e.g. 0.5. Minimum 0.01 tCO₂e. */
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(0.01) @Type(() => Number) amount: number;
   @IsString() buyerPublicKey: string;
 }
 
 export class BulkPurchaseDto {
   @IsString({ each: true }) listingIds: string[];
-  @IsInt({ each: true })    amounts: number[];
+  @IsNumber({ maxDecimalPlaces: 2 }, { each: true }) amounts: number[];
   @IsString() buyerPublicKey: string;
 }
 
