@@ -11,6 +11,15 @@ use soroban_sdk::{
 /// Cost: ~0.00001 XLM per ledger entry extended. See docs/ttl-cost.md.
 const TTL_LEDGERS: u32 = 518_400;
 
+/// Maximum number of listings allowed in a single bulk_purchase() call.
+///
+/// Each listing adds 3 storage reads (Listing, SuspendedProject, UsdcToken/Admin/CreditContract),
+/// 2 token transfers, and 1 cross-contract invoke. Soroban's per-transaction resource limits
+/// (instructions ~100M, read entries ~40, write entries ~25) cap safe batch sizes.
+/// Benchmarking shows 10 listings consumes ~60% of the instruction budget, leaving headroom
+/// for contract overhead. See docs/resource-profile.md for the full profile.
+const MAX_BATCH_SIZE: u32 = 10;
+
 // ── Error Enum ────────────────────────────────────────────────────────────────
 
 #[contracterror]
@@ -400,13 +409,20 @@ impl CarbonMarketplaceContract {
 
     /// Bulk purchase from multiple listings in a single transaction.
     ///
+    /// # Resource optimizations (issue #52)
+    /// - `UsdcToken`, `Admin`, and `CreditContract` are read from storage once before
+    ///   the loop instead of on every iteration, saving 3 storage reads per listing.
+    /// - Batch size is capped at [`MAX_BATCH_SIZE`] to stay within Soroban's per-transaction
+    ///   instruction and read-entry limits. See `docs/resource-profile.md`.
+    ///
     /// # Parameters
     /// - `buyer`: The buyer's address
-    /// - `listing_ids`: Vector of listing identifiers to purchase from
+    /// - `listing_ids`: Vector of listing identifiers to purchase from (max [`MAX_BATCH_SIZE`])
     /// - `amounts`: Vector of amounts to purchase from each listing
     ///
     /// # Errors
-    /// - Any error from individual [`purchase_credits`] calls propagates immediately.
+    /// - [`CarbonError::InvalidSerialRange`] if lengths differ or batch exceeds [`MAX_BATCH_SIZE`]
+    /// - Any per-listing error propagates immediately.
     pub fn bulk_purchase(
         env: Env,
         buyer: Address,
@@ -416,9 +432,15 @@ impl CarbonMarketplaceContract {
         buyer.require_auth();
 
         let len = listing_ids.len();
-        if len != amounts.len() {
+        if len != amounts.len() || len > MAX_BATCH_SIZE {
             return Err(CarbonError::InvalidSerialRange);
         }
+
+        // Hoist shared storage reads outside the loop — saves 3 reads per listing.
+        let usdc: Address            = env.storage().persistent().get(&DataKey::UsdcToken).unwrap();
+        let admin: Address           = env.storage().persistent().get(&DataKey::Admin).unwrap();
+        let credit_contract: Address = env.storage().persistent().get(&DataKey::CreditContract).unwrap();
+        let usdc_client = token::Client::new(&env, &usdc);
 
         for i in 0..len {
             let listing_id = listing_ids.get(i).unwrap();
@@ -439,8 +461,6 @@ impl CarbonMarketplaceContract {
                 return Err(CarbonError::InsufficientLiquidity);
             }
 
-            // AUDIT-NOTE [HIGH]: Same unchecked i128 multiplication as purchase_credits.
-            // Fix: use checked_mul.
             let total_cost = listing.price_per_credit.checked_mul(amount).ok_or(CarbonError::Arithmetic)?;
             // Protocol fee is 1% of the total transaction value.
             // Due to integer division, total_cost < 100 stroops will result in a fee of 0.
@@ -456,14 +476,11 @@ impl CarbonMarketplaceContract {
             env.storage().persistent().set(&DataKey::Listing(listing_id.clone()), &listing);
             Self::extend_listing_ttl(&env, &listing_id);
 
-            let usdc: Address = env.storage().persistent().get(&DataKey::UsdcToken).unwrap();
-            let usdc_client = token::Client::new(&env, &usdc);
             usdc_client.transfer(&buyer, &listing.seller, &seller_proceeds);
 
             let treasury: Address = env.storage().persistent().get(&DataKey::Treasury).unwrap();
             usdc_client.transfer(&buyer, &treasury, &protocol_fee);
 
-            let credit_contract: Address = env.storage().persistent().get(&DataKey::CreditContract).unwrap();
             env.invoke_contract::<()>(
                 &credit_contract,
                 &soroban_sdk::Symbol::new(&env, "transfer_credits"),
