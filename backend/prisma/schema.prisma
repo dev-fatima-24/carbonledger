@@ -216,3 +216,19 @@ model IPFSFile {
   @@index([cid])
   @@index([pinStatus])
 }
+
+model KeyRotation {
+  id          String   @id @default(cuid())
+  type        String   // "oracle", "admin", "jwt"
+  status      String   @default("pending") // "pending", "in_progress", "completed", "failed"
+  reason      String
+  scheduledAt DateTime?
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  metadata    Json     // Encrypted secrets and rotation details
+
+  @@index([type])
+  @@index([status])
+  @@index([createdAt])
+}

@@ -10,6 +10,7 @@ import { OracleModule } from "./oracle/oracle.module";
 import { StatsModule } from "./stats/stats.module";
 import { QueueModule } from "./queue/queue.module";
 import { IndexerModule } from "./indexer/indexer.module";
+import { KeyRotationModule } from "./key-rotation/key-rotation.module";
 import { PrismaService } from "./prisma.service";
 
 @Controller("health")
@@ -48,7 +49,7 @@ class HealthController {
     OracleModule,
     StatsModule,
     QueueModule,
-    UploadsModule,
+    KeyRotationModule,
   ],
   controllers: [HealthController],
   providers: [
