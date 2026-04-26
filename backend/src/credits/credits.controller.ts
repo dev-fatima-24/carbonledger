@@ -1,14 +1,17 @@
-import { Controller, Get, Post, Param, Body, UseGuards } from "@nestjs/common";
+import { Controller, Get, Post, Param, Body, UseGuards, Request } from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
+import { Throttle } from "@nestjs/throttler";
 import { CreditsService } from "./credits.service";
 import { MintCreditsDto, RetireCreditsDto } from "./credits.dto";
+import { Roles, RolesGuard } from "../auth/roles.guard";
 
 @Controller("credits")
 export class CreditsController {
   constructor(private readonly creditsService: CreditsService) {}
 
   @Post("mint")
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), RolesGuard)
+  @Roles("admin")
   mint(@Body() dto: MintCreditsDto) {
     return this.creditsService.mintCredits(dto);
   }
@@ -19,9 +22,13 @@ export class CreditsController {
   }
 
   @Post("retire")
-  @UseGuards(AuthGuard("jwt"))
-  retire(@Body() dto: RetireCreditsDto) {
-    return this.creditsService.retireCredits(dto);
+  @UseGuards(AuthGuard("jwt"), RolesGuard)
+  @Roles("corporation", "admin")
+  @Throttle({ retire: { ttl: 60_000, limit: 10 } })  // Fix API6: 10 retirements per minute
+  retire(@Body() dto: RetireCreditsDto, @Request() req: any) {
+    // Fix mass assignment: derive retiredBy from the authenticated JWT, not the body
+    const authedDto = { ...dto, holderPublicKey: req.user.publicKey };
+    return this.creditsService.retireCredits(authedDto);
   }
 
   @Get("retirement/:id")

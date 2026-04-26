@@ -1,13 +1,12 @@
-import { IsString, IsInt, IsNumber, IsPositive, IsOptional, Min, Max } from "class-validator";
+import { IsString, IsInt, IsPositive, IsOptional, Min, Max, ArrayMaxSize, ArrayMinSize } from "class-validator";
 import { Type } from "class-transformer";
 
 export class CreateListingDto {
   @IsString() listingId: string;
   @IsString() projectId: string;
   @IsString() batchId: string;
-  @IsString() seller: string;
-  /** Supports fractional tonnes, e.g. 0.5. Minimum 0.01 tCO₂e. */
-  @IsNumber({ maxDecimalPlaces: 2 }) @Min(0.01) @Type(() => Number) amountAvailable: number;
+  // seller is intentionally omitted — always set from req.user.publicKey in the controller
+  @IsInt() @IsPositive() @Type(() => Number) amountAvailable: number;
   @IsString() pricePerCredit: string;
   @IsInt() @Min(1990) @Max(2100) @Type(() => Number) vintageYear: number;
   @IsString() methodology: string;
@@ -16,15 +15,24 @@ export class CreateListingDto {
 
 export class PurchaseDto {
   @IsString() listingId: string;
-  /** Supports fractional tonnes, e.g. 0.5. Minimum 0.01 tCO₂e. */
-  @IsNumber({ maxDecimalPlaces: 2 }) @Min(0.01) @Type(() => Number) amount: number;
-  @IsString() buyerPublicKey: string;
+  @IsInt() @IsPositive() @Type(() => Number) amount: number;
+  // buyerPublicKey is set from req.user.publicKey in the controller
+  buyerPublicKey?: string;
 }
 
 export class BulkPurchaseDto {
-  @IsString({ each: true }) listingIds: string[];
-  @IsNumber({ maxDecimalPlaces: 2 }, { each: true }) amounts: number[];
-  @IsString() buyerPublicKey: string;
+  @IsString({ each: true })
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)  // Fix API4: cap bulk operations to prevent resource exhaustion
+  listingIds: string[];
+
+  @IsInt({ each: true })
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)
+  amounts: number[];
+
+  // buyerPublicKey is set from req.user.publicKey in the controller
+  buyerPublicKey?: string;
 }
 
 export class ListingsQueryDto {

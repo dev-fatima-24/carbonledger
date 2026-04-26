@@ -25,7 +25,6 @@ model CarbonProject {
   metadataCid         String
   verifierAddress     String
   ownerAddress        String
-  methodologyScore    Int      @default(0)
   coordinates         Json?
   lastMonitoringAt    DateTime?
   createdAt           DateTime @default(now())
@@ -215,4 +214,32 @@ model IPFSFile {
 
   @@index([cid])
   @@index([pinStatus])
+}
+
+model VerifierApplication {
+  id               String    @id @default(cuid())
+  publicKey        String    @unique
+  organizationName String
+  accreditationBody String
+  accreditationId  String
+  contactEmail     String
+  documentsCid     String
+  status           String    @default("pending")  // pending | approved | rejected
+  approvedBy       String?
+  approvedAt       DateTime?
+  rejectionReason  String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
+
+model PriceApproval {
+  id           String   @id @default(cuid())
+  methodology  String
+  vintageYear  Int
+  priceStroops String
+  deviation    Float
+  status       String   @default("Pending")  // Pending | Approved | Rejected
+  reason       String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }

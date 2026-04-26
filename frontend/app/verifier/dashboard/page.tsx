@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import OracleStatus from "../../../components/OracleStatus";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api/v1";
 
@@ -99,6 +100,8 @@ export default function VerifierDashboardPage() {
         </div>
       ))}
 
+      <hr style={{ margin: "2rem 0" }} />
+      <OracleStatus />
       <hr style={{ margin: "2rem 0" }} />
       <p style={{ fontSize: "0.875rem", color: "#666" }}>
         <strong>Attestation fee:</strong> verifiers earn a fee per approved project as documented in{" "}

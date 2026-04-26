@@ -22,7 +22,10 @@ export class MarketplaceService {
     const [listings, total_count] = await Promise.all([
       this.prisma.marketListing.findMany({
         where,
-        orderBy: { createdAt: "desc" },
+        orderBy: [
+          { vintageYear: "desc" },
+          { createdAt: "desc" },
+        ],
         take: limit + 1,
         cursor: cursor ? { id: cursor } : undefined,
         skip: cursor ? 1 : 0,
@@ -43,8 +46,22 @@ export class MarketplaceService {
     return l;
   }
 
-  async createListing(dto: CreateListingDto) {
-    return this.prisma.marketListing.create({ data: dto });
+  async createListing(dto: CreateListingDto & { seller: string }) {
+    // Fix mass assignment (API3): explicitly pick only allowed fields — never trust the full DTO object
+    return this.prisma.marketListing.create({
+      data: {
+        listingId:       dto.listingId,
+        projectId:       dto.projectId,
+        batchId:         dto.batchId,
+        seller:          dto.seller,          // always from req.user.publicKey via controller
+        amountAvailable: dto.amountAvailable,
+        pricePerCredit:  dto.pricePerCredit,
+        vintageYear:     dto.vintageYear,
+        methodology:     dto.methodology,
+        country:         dto.country,
+        status:          "Active",            // status is never accepted from the client
+      },
+    });
   }
 
   async delistListing(listingId: string) {
@@ -60,12 +77,11 @@ export class MarketplaceService {
     if (!["Active", "PartiallyFilled"].includes(listing.status)) {
       throw new BadRequestException("Listing is not available");
     }
-    const available = Number(listing.amountAvailable);
-    if (dto.amount > available) {
+    if (dto.amount > listing.amountAvailable) {
       throw new BadRequestException("Insufficient credits in listing");
     }
 
-    const newAmount = parseFloat((available - dto.amount).toFixed(2));
+    const newAmount = listing.amountAvailable - dto.amount;
     const newStatus = newAmount === 0 ? "Sold" : "PartiallyFilled";
 
     await this.prisma.marketListing.update({
@@ -81,6 +97,10 @@ export class MarketplaceService {
   }
 
   async bulkPurchase(dto: BulkPurchaseDto) {
+    // Fix API4: enforce cap at service layer in case DTO validation is bypassed
+    if (dto.listingIds.length > 50) {
+      throw new BadRequestException("Bulk purchase is limited to 50 listings per request");
+    }
     const results = [];
     for (let i = 0; i < dto.listingIds.length; i++) {
       const result = await this.purchase({
