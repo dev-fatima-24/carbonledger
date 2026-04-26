@@ -380,15 +380,30 @@ impl CarbonMarketplaceContract {
         Ok(())
     }
 
-    /// Bulk purchase from multiple listings in a single transaction.
+    /// Bulk purchase from multiple listings in a single atomic transaction.
+    ///
+    /// Atomicity guarantee: all listings are validated before any state is mutated
+    /// and before any USDC is transferred. If any listing fails (insufficient
+    /// credits, delisted, suspended, zero amount, or arithmetic overflow) the
+    /// entire call reverts with no partial fills and no USDC transferred.
+    ///
+    /// Execution order:
+    ///   1. VALIDATE  — check every listing; no storage writes.
+    ///   2. MUTATE    — write updated listing state for every entry.
+    ///   3. TRANSFER  — execute USDC and credit transfers for every entry.
     ///
     /// # Parameters
-    /// - `buyer`: The buyer's address
-    /// - `listing_ids`: Vector of listing identifiers to purchase from
-    /// - `amounts`: Vector of amounts to purchase from each listing
+    /// - `buyer`: The buyer's address (must authorise the call)
+    /// - `listing_ids`: Ordered vector of listing identifiers
+    /// - `amounts`: Ordered vector of credit amounts matching `listing_ids`
     ///
     /// # Errors
-    /// - Any error from individual [`purchase_credits`] calls propagates immediately.
+    /// - [`CarbonError::InvalidSerialRange`] if lengths differ
+    /// - [`CarbonError::ZeroAmountNotAllowed`] if any amount ≤ 0
+    /// - [`CarbonError::ListingNotFound`] if any listing is missing, delisted, or sold
+    /// - [`CarbonError::ProjectSuspended`] if any listing's project is suspended
+    /// - [`CarbonError::InsufficientLiquidity`] if any listing has fewer credits than requested
+    /// - [`CarbonError::Arithmetic`] on cost overflow
     pub fn bulk_purchase(
         env: Env,
         buyer: Address,
@@ -402,30 +417,48 @@ impl CarbonMarketplaceContract {
             return Err(CarbonError::InvalidSerialRange);
         }
 
+        // ── Phase 1: VALIDATE — no storage writes ────────────────────────────
+        let mut validated_listings: Vec<MarketListing> = Vec::new(&env);
+        let mut validated_amounts:  Vec<i128>          = Vec::new(&env);
+        let mut proceeds_vec:       Vec<i128>          = Vec::new(&env);
+        let mut fees_vec:           Vec<i128>          = Vec::new(&env);
+
         for i in 0..len {
             let listing_id = listing_ids.get(i).unwrap();
-            let amount = amounts.get(i).unwrap();
+            let amount     = amounts.get(i).unwrap();
 
             if amount <= 0 {
                 return Err(CarbonError::ZeroAmountNotAllowed);
             }
 
-            let mut listing = Self::load_listing(&env, &listing_id)?;
+            let listing = Self::load_listing(&env, &listing_id)?;
             if listing.status == ListingStatus::Delisted || listing.status == ListingStatus::Sold {
                 return Err(CarbonError::ListingNotFound);
             }
-            if env.storage().persistent().get::<DataKey, bool>(&DataKey::SuspendedProject(listing.project_id.clone())).unwrap_or(false) {
+            if env.storage().persistent()
+                .get::<DataKey, bool>(&DataKey::SuspendedProject(listing.project_id.clone()))
+                .unwrap_or(false)
+            {
                 return Err(CarbonError::ProjectSuspended);
             }
             if amount > listing.amount_available {
                 return Err(CarbonError::InsufficientLiquidity);
             }
 
-            // AUDIT-NOTE [HIGH]: Same unchecked i128 multiplication as purchase_credits.
-            // Fix: use checked_mul.
             let total_cost = listing.price_per_credit.checked_mul(amount).ok_or(CarbonError::Arithmetic)?;
-            let protocol_fee = total_cost.checked_div(100).ok_or(CarbonError::Arithmetic)?;
-            let seller_proceeds = total_cost.checked_sub(protocol_fee).ok_or(CarbonError::Arithmetic)?;
+            let fee        = total_cost.checked_div(100).ok_or(CarbonError::Arithmetic)?;
+            let proceeds   = total_cost.checked_sub(fee).ok_or(CarbonError::Arithmetic)?;
+
+            validated_listings.push_back(listing);
+            validated_amounts.push_back(amount);
+            proceeds_vec.push_back(proceeds);
+            fees_vec.push_back(fee);
+        }
+
+        // ── Phase 2: MUTATE — update all listing states ───────────────────────
+        for i in 0..validated_listings.len() {
+            let mut listing = validated_listings.get(i).unwrap();
+            let amount      = validated_amounts.get(i).unwrap();
 
             listing.amount_available = listing.amount_available.checked_sub(amount).ok_or(CarbonError::Arithmetic)?;
             listing.status = if listing.amount_available == 0 {
@@ -433,25 +466,34 @@ impl CarbonMarketplaceContract {
             } else {
                 ListingStatus::PartiallyFilled
             };
-            env.storage().persistent().set(&DataKey::Listing(listing_id.clone()), &listing);
-            Self::extend_listing_ttl(&env, &listing_id);
+            env.storage().persistent().set(&DataKey::Listing(listing.listing_id.clone()), &listing);
+            Self::extend_listing_ttl(&env, &listing.listing_id);
+            validated_listings.set(i, listing);
+        }
 
-            let usdc: Address = env.storage().persistent().get(&DataKey::UsdcToken).unwrap();
-            let usdc_client = token::Client::new(&env, &usdc);
-            usdc_client.transfer(&buyer, &listing.seller, &seller_proceeds);
+        // ── Phase 3: TRANSFER — USDC and credits ─────────────────────────────
+        let usdc: Address           = env.storage().persistent().get(&DataKey::UsdcToken).unwrap();
+        let admin: Address          = env.storage().persistent().get(&DataKey::Admin).unwrap();
+        let credit_contract: Address = env.storage().persistent().get(&DataKey::CreditContract).unwrap();
+        let usdc_client = token::Client::new(&env, &usdc);
 
-            let admin: Address = env.storage().persistent().get(&DataKey::Admin).unwrap();
-            usdc_client.transfer(&buyer, &admin, &protocol_fee);
+        for i in 0..validated_listings.len() {
+            let listing  = validated_listings.get(i).unwrap();
+            let amount   = validated_amounts.get(i).unwrap();
+            let proceeds = proceeds_vec.get(i).unwrap();
+            let fee      = fees_vec.get(i).unwrap();
 
-            let credit_contract: Address = env.storage().persistent().get(&DataKey::CreditContract).unwrap();
+            usdc_client.transfer(&buyer, &listing.seller, &proceeds);
+            usdc_client.transfer(&buyer, &admin, &fee);
+
             env.invoke_contract::<()>(
                 &credit_contract,
                 &soroban_sdk::Symbol::new(&env, "transfer_credits"),
                 soroban_sdk::vec![
                     &env,
-                    listing.seller.into_val(&env),
+                    listing.seller.clone().into_val(&env),
                     buyer.clone().into_val(&env),
-                    listing.batch_id.into_val(&env),
+                    listing.batch_id.clone().into_val(&env),
                     amount.into_val(&env),
                 ],
             );
@@ -459,15 +501,16 @@ impl CarbonMarketplaceContract {
             env.events().publish(
                 (symbol_short!("c_ledger"), symbol_short!("bulk_buy")),
                 PurchaseCompletedEvent {
-                    listing_id: listing_id.clone(),
-                    buyer: buyer.clone(),
-                    seller: listing.seller.clone(),
+                    listing_id: listing.listing_id.clone(),
+                    buyer:      buyer.clone(),
+                    seller:     listing.seller.clone(),
                     amount,
-                    total_cost,
-                    timestamp: env.ledger().timestamp(),
+                    total_cost: proceeds.checked_add(fee).ok_or(CarbonError::Arithmetic)?,
+                    timestamp:  env.ledger().timestamp(),
                 },
             );
         }
+
         Ok(())
     }
 
@@ -736,6 +779,97 @@ mod tests {
         // Purchase must fail because wrong_credit has no transfer_credits function
         let result = client.try_purchase_credits(&buyer, &s(&env, "list-001"), &10_i128);
         assert!(result.is_err());
+    }
+
+    // ── Issue #57: Bulk Purchase Atomicity tests ──────────────────────────────
+
+    /// Helper: add a named listing with given amount and price.
+    fn add_named_listing(
+        env: &Env,
+        client: &CarbonMarketplaceContractClient,
+        seller: &Address,
+        listing_id: &str,
+        batch_id: &str,
+        amount: i128,
+    ) {
+        client.list_credits(
+            seller,
+            &s(env, listing_id),
+            &s(env, batch_id),
+            &s(env, "proj-001"),
+            &amount,
+            &1_i128, // 1 stroop per credit — keeps arithmetic trivial
+            &2023_u32,
+            &s(env, "VCS"),
+            &s(env, "Brazil"),
+        );
+    }
+
+    /// If one listing has insufficient credits the entire bulk_purchase reverts.
+    /// No listing state must change.
+    #[test]
+    fn test_bulk_purchase_insufficient_credits_reverts_all() {
+        let env = Env::default();
+        let (client, _, seller, _) = setup(&env);
+
+        add_named_listing(&env, &client, &seller, "list-a", "batch-a", 50);
+        add_named_listing(&env, &client, &seller, "list-b", "batch-b", 10); // only 10 available
+
+        let buyer = Address::generate(&env);
+        // Request 20 from list-b which only has 10 → should fail
+        let result = client.try_bulk_purchase(
+            &buyer,
+            &vec![&env, s(&env, "list-a"), s(&env, "list-b")],
+            &vec![&env, 5_i128, 20_i128],
+        );
+        assert_eq!(result.unwrap_err().unwrap(), CarbonError::InsufficientLiquidity);
+
+        // list-a must be untouched (atomicity: no partial fill)
+        let la = client.get_listing(&s(&env, "list-a"));
+        assert_eq!(la.amount_available, 50);
+        assert_eq!(la.status, ListingStatus::Active);
+    }
+
+    /// If one listing is delisted mid-bulk the entire bulk_purchase reverts.
+    #[test]
+    fn test_bulk_purchase_delisted_listing_reverts_all() {
+        let env = Env::default();
+        let (client, _, seller, _) = setup(&env);
+
+        add_named_listing(&env, &client, &seller, "list-a", "batch-a", 50);
+        add_named_listing(&env, &client, &seller, "list-b", "batch-b", 50);
+
+        // Delist list-b before the bulk purchase
+        client.delist_credits(&seller, &s(&env, "list-b"));
+
+        let buyer = Address::generate(&env);
+        let result = client.try_bulk_purchase(
+            &buyer,
+            &vec![&env, s(&env, "list-a"), s(&env, "list-b")],
+            &vec![&env, 5_i128, 5_i128],
+        );
+        assert_eq!(result.unwrap_err().unwrap(), CarbonError::ListingNotFound);
+
+        // list-a must be untouched
+        let la = client.get_listing(&s(&env, "list-a"));
+        assert_eq!(la.amount_available, 50);
+        assert_eq!(la.status, ListingStatus::Active);
+    }
+
+    /// Mismatched listing_ids / amounts lengths must fail immediately.
+    #[test]
+    fn test_bulk_purchase_mismatched_lengths_fails() {
+        let env = Env::default();
+        let (client, _, seller, _) = setup(&env);
+        add_named_listing(&env, &client, &seller, "list-a", "batch-a", 50);
+
+        let buyer = Address::generate(&env);
+        let result = client.try_bulk_purchase(
+            &buyer,
+            &vec![&env, s(&env, "list-a")],
+            &vec![&env, 5_i128, 10_i128], // length mismatch
+        );
+        assert_eq!(result.unwrap_err().unwrap(), CarbonError::InvalidSerialRange);
     }
 }
 
