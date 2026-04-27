@@ -1,24 +1,24 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useListings } from "../../lib/api";
-import { formatStroops, formatTonnes } from "../../lib/carbon-utils";
 import { colors } from "../../styles/design-system";
 import CreditCard from "../../components/CreditCard";
-import MarketplaceFilter, { FilterState } from "../../components/MarketplaceFilter";
+import MarketplaceFilter, { FilterState, filtersFromParams } from "../../components/MarketplaceFilter";
 import LoadingSkeleton from "../../components/LoadingSkeleton";
 
-export default function MarketplacePage() {
-  const [filters, setFilters] = useState<FilterState>({
-    methodology: "", vintageYear: "", country: "", minPrice: "", maxPrice: "",
-  });
+function MarketplaceContent() {
+  const searchParams = useSearchParams();
+  const [filters, setFilters] = useState<FilterState>(() => filtersFromParams(searchParams));
 
   const { data: listings, isLoading } = useListings({
-    methodology: filters.methodology || undefined,
-    vintage:     filters.vintageYear ? Number(filters.vintageYear) : undefined,
-    country:     filters.country     || undefined,
-    minPrice:    filters.minPrice    || undefined,
-    maxPrice:    filters.maxPrice    || undefined,
+    methodology:  filters.methodology  || undefined,
+    vintage:      filters.vintageYear  ? Number(filters.vintageYear) : undefined,
+    country:      filters.country      || undefined,
+    minPrice:     filters.minPrice     || undefined,
+    maxPrice:     filters.maxPrice     || undefined,
+    projectType:  filters.projectType  || undefined,
   });
 
   return (
@@ -62,5 +62,19 @@ export default function MarketplacePage() {
         </>
       )}
     </div>
+  );
+}
+
+export default function MarketplacePage() {
+  return (
+    <Suspense fallback={
+      <div style={{ maxWidth: "1200px", margin: "0 auto", padding: "2.5rem 2rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "1.5rem" }}>
+          {Array.from({ length: 9 }).map((_, i) => <LoadingSkeleton key={i} variant="CreditCard" />)}
+        </div>
+      </div>
+    }>
+      <MarketplaceContent />
+    </Suspense>
   );
 }

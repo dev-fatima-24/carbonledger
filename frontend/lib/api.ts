@@ -117,7 +117,7 @@ export function useProject(id: string) {
   return useSWR<CarbonProject>(id ? `${API_URL}/projects/${id}` : null, fetcher, swrConfig);
 }
 
-export function useListings(params?: { methodology?: string; vintage?: number; country?: string; minPrice?: string; maxPrice?: string }) {
+export function useListings(params?: { methodology?: string; vintage?: number; country?: string; minPrice?: string; maxPrice?: string; projectType?: string }) {
   const query = new URLSearchParams(params as Record<string, string>).toString();
   return useSWR<MarketListing[]>(`${API_URL}/marketplace/listings?${query}`, fetcher, swrConfig);
 }

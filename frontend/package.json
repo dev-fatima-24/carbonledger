@@ -30,7 +30,6 @@
     "@storybook/addon-essentials": "^7.6.0",
     "@storybook/addon-interactions": "^7.6.0",
     "@storybook/addon-links": "^7.6.0",
-    "@storybook/arc": "^7.6.0",
     "@storybook/nextjs": "^7.6.0",
     "@storybook/react": "^7.6.0",
     "@storybook/test": "^7.6.0",
