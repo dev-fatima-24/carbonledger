@@ -1,83 +1,104 @@
-"use client";
+'use client';
 
-import { useRetirements } from "../../lib/api";
-import { formatTonnes } from "../../lib/carbon-utils";
-import { colors } from "../../styles/design-system";
-import AuditExplorer from "../../components/AuditExplorer";
-import SerialNumberLookup from "../../components/SerialNumberLookup";
+import { useState } from 'react';
+import { useIsMobile } from '@/hooks/useMediaQuery';
 
 export default function AuditPage() {
-  const { data: retirements } = useRetirements(5);
+  const isMobile = useIsMobile();
+  const [filter, setFilter] = useState('all');
+
+  const auditLogs = [
+    { id: 1, timestamp: '2024-01-15 10:30', user: 'admin@example.com', action: 'Credit Issuance', details: '100 tons issued', status: 'Success' },
+    { id: 2, timestamp: '2024-01-14 15:45', user: 'trader@example.com', action: 'Transfer', details: '50 tons transferred', status: 'Success' },
+    { id: 3, timestamp: '2024-01-13 09:00', user: 'verifier@example.com', action: 'Verification', details: 'Project verified', status: 'Pending' },
+  ];
+
+  const filteredLogs = filter === 'all' ? auditLogs : auditLogs.filter(log => log.status.toLowerCase() === filter);
 
   return (
-    <div style={{ maxWidth: "1200px", margin: "0 auto", padding: "2.5rem 2rem" }}>
-      <div style={{ marginBottom: "2rem" }}>
-        <div style={{
-          display: "inline-block",
-          background: colors.primary[50], color: colors.primary[700],
-          border: `1px solid ${colors.primary[200]}`,
-          borderRadius: "9999px", padding: "0.3rem 1rem",
-          fontSize: "0.8rem", fontWeight: 600, marginBottom: "1rem",
-        }}>
-          No wallet required · Fully public
-        </div>
-        <h1 style={{ fontSize: "2rem", fontWeight: 800, color: colors.neutral[900], margin: "0 0 0.5rem" }}>
-          Public Audit Trail
-        </h1>
-        <p style={{ color: colors.neutral[500], margin: 0 }}>
-          Every issuance, transfer, and retirement is permanently recorded on Stellar.
-          Search any serial number or project to see complete provenance.
-        </p>
+    <div className="container" style={{ padding: isMobile ? '16px' : '24px' }}>
+      <h1 style={{ fontSize: isMobile ? '24px' : '32px', marginBottom: '16px' }}>
+        Audit Log
+      </h1>
+
+      {/* Filter buttons - touch friendly */}
+      <div style={{ display: 'flex', gap: '12px', marginBottom: '24px', flexWrap: 'wrap' }}>
+        {['all', 'success', 'pending'].map((type) => (
+          <button
+            key={type}
+            onClick={() => setFilter(type)}
+            style={{
+              padding: '12px 20px',
+              minHeight: '44px',
+              backgroundColor: filter === type ? '#3b82f6' : '#e5e7eb',
+              color: filter === type ? 'white' : '#374151',
+              border: 'none',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontWeight: '500'
+            }}
+          >
+            {type.charAt(0).toUpperCase() + type.slice(1)}
+          </button>
+        ))}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "2rem" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-          <div style={{
-            background: colors.surface, border: `1px solid ${colors.neutral[200]}`,
-            borderRadius: "0.75rem", padding: "1.5rem",
-          }}>
-            <h2 style={{ fontSize: "1rem", fontWeight: 700, color: colors.neutral[900], margin: "0 0 1rem" }}>
-              All Retirements
-            </h2>
-            <AuditExplorer />
-          </div>
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-          <SerialNumberLookup />
-
-          {/* Recent retirements summary */}
-          <div style={{
-            background: colors.surface, border: `1px solid ${colors.neutral[200]}`,
-            borderRadius: "0.75rem", padding: "1.25rem",
-          }}>
-            <h3 style={{ fontSize: "0.875rem", fontWeight: 700, color: colors.neutral[800], margin: "0 0 0.75rem" }}>
-              Recent Retirements
-            </h3>
-            {(retirements ?? []).map(r => (
-              <div key={r.retirementId} style={{
-                padding: "0.6rem 0", borderBottom: `1px solid ${colors.neutral[100]}`,
-                display: "flex", justifyContent: "space-between",
-              }}>
-                <div>
-                  <p style={{ fontSize: "0.8rem", fontWeight: 600, color: colors.neutral[800], margin: 0 }}>
-                    {r.beneficiary}
-                  </p>
-                  <p style={{ fontSize: "0.7rem", color: colors.neutral[400], margin: "0.1rem 0 0" }}>
-                    {r.projectId}
-                  </p>
-                </div>
-                <a href={`/retire/${r.retirementId}`} style={{
-                  fontSize: "0.75rem", fontWeight: 700, color: colors.primary[700],
-                  textDecoration: "none", alignSelf: "center",
-                }}>
-                  {formatTonnes(r.amount)}
-                </a>
+      {isMobile ? (
+        <div className="mobile-card-container">
+          {filteredLogs.map((log) => (
+            <div key={log.id} className="mobile-card">
+              <div className="mobile-card-title">{log.timestamp}</div>
+              <div className="mobile-card-row">
+                <span className="mobile-card-label">User</span>
+                <span className="mobile-card-value">{log.user}</span>
               </div>
-            ))}
-          </div>
+              <div className="mobile-card-row">
+                <span className="mobile-card-label">Action</span>
+                <span className="mobile-card-value">{log.action}</span>
+              </div>
+              <div className="mobile-card-row">
+                <span className="mobile-card-label">Details</span>
+                <span className="mobile-card-value">{log.details}</span>
+              </div>
+              <div className="mobile-card-row">
+                <span className="mobile-card-label">Status</span>
+                <span className="mobile-card-value" style={{ 
+                  color: log.status === 'Success' ? '#10b981' : '#f59e0b'
+                }}>
+                  {log.status}
+                </span>
+              </div>
+            </div>
+          ))}
         </div>
-      </div>
+      ) : (
+        <div className="table-responsive">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>User</th>
+                <th>Action</th>
+                <th>Details</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredLogs.map((log) => (
+                <tr key={log.id}>
+                  <td>{log.timestamp}</td>
+                  <td>{log.user}</td>
+                  <td>{log.action}</td>
+                  <td>{log.details}</td>
+                  <td style={{ color: log.status === 'Success' ? '#10b981' : '#f59e0b' }}>
+                    {log.status}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

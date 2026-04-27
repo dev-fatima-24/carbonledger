@@ -14,8 +14,62 @@ export default function ProjectDetailPage({ params }: { params: { id: string } }
   const projectRetirements = (retirements ?? []).filter(r => r.projectId === params.id);
 
   if (isLoading) return (
-    <div style={{ maxWidth: "900px", margin: "2rem auto", padding: "0 2rem" }}>
-      <LoadingSkeleton variant="CreditCard" count={3} />
+    <div style={{ maxWidth: "1000px", margin: "0 auto", padding: "2.5rem 2rem" }}>
+      {/* Header Skeleton */}
+      <div style={{ marginBottom: "2rem" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+          <div style={{ width: "100px", height: "14px", background: colors.neutral[100], borderRadius: "4px" }} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", width: "100%" }}>
+              <div style={{ width: "40%", height: "32px", background: colors.neutral[100], borderRadius: "4px" }} />
+              <div style={{ width: "60%", height: "16px", background: colors.neutral[100], borderRadius: "4px" }} />
+            </div>
+            <div style={{ width: "80px", height: "24px", background: colors.neutral[100], borderRadius: "9999px" }} />
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "2rem" }}>
+        {/* Left column */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+          {/* Stats Skeleton */}
+          <div style={{
+            background: colors.surface, border: `1px solid ${colors.neutral[200]}`,
+            borderRadius: "0.75rem", padding: "1.5rem",
+          }}>
+            <div style={{ width: "120px", height: "16px", background: colors.neutral[100], borderRadius: "4px", marginBottom: "1rem" }} />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "1rem" }}>
+              {[1, 2, 3, 4].map(i => (
+                <div key={i}>
+                  <div style={{ width: "60px", height: "10px", background: colors.neutral[100], borderRadius: "4px", marginBottom: "0.4rem" }} />
+                  <div style={{ width: "80px", height: "24px", background: colors.neutral[100], borderRadius: "4px" }} />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Provenance Skeleton */}
+          <div style={{
+            background: colors.surface, border: `1px solid ${colors.neutral[200]}`,
+            borderRadius: "0.75rem", padding: "1.5rem",
+          }}>
+            <div style={{ width: "120px", height: "16px", background: colors.neutral[100], borderRadius: "4px", marginBottom: "1.5rem" }} />
+            <LoadingSkeleton variant="ProvenanceTrail" count={1} />
+          </div>
+        </div>
+
+        {/* Right column */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+          <div style={{
+            background: colors.surface, border: `1px solid ${colors.neutral[200]}`,
+            borderRadius: "0.75rem", padding: "1.5rem",
+          }}>
+            <div style={{ width: "150px", height: "16px", background: colors.neutral[100], borderRadius: "4px", marginBottom: "1rem" }} />
+            <div style={{ width: "100%", height: "40px", background: colors.neutral[100], borderRadius: "4px" }} />
+          </div>
+          <div style={{ width: "100%", height: "48px", background: colors.neutral[100], borderRadius: "8px" }} />
+        </div>
+      </div>
     </div>
   );
 

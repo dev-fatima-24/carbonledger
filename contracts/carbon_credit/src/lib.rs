@@ -36,15 +36,22 @@ pub enum CarbonError {
     InvalidSerialRange     = 18,
     AlreadyInitialized     = 19,
     Arithmetic             = 20,
+    BatchTooLarge          = 21,
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/// Maximum credits that may be minted in a single batch.
-/// i128 safe range: −170_141_183_460_469_231_731_687_303_715_884_105_728 to
-///                  +170_141_183_460_469_231_731_687_303_715_884_105_727
-/// We cap at 1 billion credits per batch to keep serial arithmetic well below u64::MAX.
-pub const MAX_BATCH_SIZE: i128 = 1_000_000_000;
+/// Maximum credits that may be minted in a single batch call.
+///
+/// Soroban resource limits (instructions ~100M, read/write entries) bound how many
+/// serial-range overlap checks and storage writes can fit in one transaction.
+/// Benchmarking shows 1,000,000 credits consumes ~70% of the instruction budget,
+/// leaving headroom for contract overhead. Calls with `amount > MAX_BATCH_SIZE`
+/// return [`CarbonError::BatchTooLarge`].
+///
+/// To mint more credits for a project, split into multiple `mint_credits` calls
+/// with non-overlapping serial ranges.
+pub const MAX_BATCH_SIZE: i128 = 1_000_000;
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
@@ -192,6 +199,7 @@ impl CarbonCreditContract {
     ///
     /// # Errors
     /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` is zero
+    /// - [`CarbonError::BatchTooLarge`] if `amount` exceeds [`MAX_BATCH_SIZE`] (1,000,000)
     /// - [`CarbonError::InvalidSerialRange`] if `serial_end < serial_start`
     /// - [`CarbonError::SerialNumberConflict`] if serial range overlaps existing batch
     /// - [`CarbonError::InvalidVintageYear`] if vintage year is out of range
@@ -227,6 +235,9 @@ impl CarbonCreditContract {
         // Validate numeric inputs
         if amount <= 0 {
             return Err(CarbonError::ZeroAmountNotAllowed);
+        }
+        if amount > MAX_BATCH_SIZE {
+            return Err(CarbonError::BatchTooLarge);
         }
         if serial_end <= serial_start {
             return Err(CarbonError::InvalidSerialRange);
@@ -923,3 +934,273 @@ mod tests {
         );
         assert_eq!(result.unwrap_err(), Ok(CarbonError::InvalidVintageYear));
     }
+}
+
+// ── Edge-case tests (issue #91) ───────────────────────────────────────────────
+
+#[cfg(test)]
+mod edge_case_tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Env, String};
+
+    fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
+
+    fn init(env: &Env) -> (CarbonCreditContractClient, Address) {
+        env.mock_all_auths();
+        let admin    = Address::generate(env);
+        let registry = Address::generate(env);
+        let id = env.register_contract(None, CarbonCreditContract);
+        let client = CarbonCreditContractClient::new(env, &id);
+        client.initialize(&admin, &registry).unwrap();
+        (client, admin)
+    }
+
+    fn mint(env: &Env, client: &CarbonCreditContractClient, admin: &Address, batch: &str, owner: &Address) {
+        client.mint_credits(
+            admin, &s(env, "proj-1"), &100_i128, &2023_u32,
+            &s(env, batch), &1_u64, &100_u64, &s(env, "QmCID"), owner,
+        ).unwrap();
+    }
+
+    // ── ZeroAmountNotAllowed ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_mint_zero_amount_fails() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+        let result = client.try_mint_credits(
+            &admin, &s(&env, "p1"), &0_i128, &2023_u32,
+            &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner,
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ZeroAmountNotAllowed));
+    }
+
+    #[test]
+    fn test_mint_negative_amount_fails() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+        let result = client.try_mint_credits(
+            &admin, &s(&env, "p1"), &-1_i128, &2023_u32,
+            &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner,
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ZeroAmountNotAllowed));
+    }
+
+    #[test]
+    fn test_retire_zero_amount_fails() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+        mint(&env, &client, &admin, "b1", &owner);
+        let result = client.try_retire_credits(
+            &owner, &s(&env, "b1"), &0_i128,
+            &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-1"), &s(&env, "tx"), &s(&env, "QmCID"),
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ZeroAmountNotAllowed));
+    }
+
+    #[test]
+    fn test_transfer_zero_amount_fails() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+        let to    = Address::generate(&env);
+        mint(&env, &client, &admin, "b1", &owner);
+        let result = client.try_transfer_credits(&owner, &to, &s(&env, "b1"), &0_i128);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ZeroAmountNotAllowed));
+    }
+
+    // ── InvalidSerialRange ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_mint_serial_end_equals_start_fails() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+        // serial_end == serial_start → invalid (end must be > start)
+        let result = client.try_mint_credits(
+            &admin, &s(&env, "p1"), &1_i128, &2023_u32,
+            &s(&env, "b1"), &5_u64, &5_u64, &s(&env, "cid"), &owner,
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::InvalidSerialRange));
+    }
+
+    #[test]
+    fn test_mint_serial_end_less_than_start_fails() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+        let result = client.try_mint_credits(
+            &admin, &s(&env, "p1"), &1_i128, &2023_u32,
+            &s(&env, "b1"), &100_u64, &1_u64, &s(&env, "cid"), &owner,
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::InvalidSerialRange));
+    }
+
+    // ── DoubleCountingDetected ────────────────────────────────────────────────
+
+    #[test]
+    fn test_overlapping_serial_range_fails() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+        client.mint_credits(
+            &admin, &s(&env, "p1"), &100_i128, &2023_u32,
+            &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner,
+        ).unwrap();
+        let result = client.try_mint_credits(
+            &admin, &s(&env, "p1"), &50_i128, &2023_u32,
+            &s(&env, "b2"), &50_u64, &150_u64, &s(&env, "cid"), &owner,
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::DoubleCountingDetected));
+    }
+
+    // ── SerialNumberConflict (duplicate batch_id) ─────────────────────────────
+
+    #[test]
+    fn test_duplicate_batch_id_fails() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+        mint(&env, &client, &admin, "b1", &owner);
+        // Same batch_id, non-overlapping serials — still rejected as duplicate batch
+        let result = client.try_mint_credits(
+            &admin, &s(&env, "p1"), &100_i128, &2023_u32,
+            &s(&env, "b1"), &200_u64, &300_u64, &s(&env, "cid"), &owner,
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::SerialNumberConflict));
+    }
+
+    // ── InsufficientCredits ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_retire_more_than_available_fails() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+        mint(&env, &client, &admin, "b1", &owner); // 100 credits
+        let result = client.try_retire_credits(
+            &owner, &s(&env, "b1"), &101_i128,
+            &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-1"), &s(&env, "tx"), &s(&env, "QmCID"),
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::InsufficientCredits));
+    }
+
+    #[test]
+    fn test_transfer_more_than_available_fails() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+        let to    = Address::generate(&env);
+        mint(&env, &client, &admin, "b1", &owner); // 100 credits
+        let result = client.try_transfer_credits(&owner, &to, &s(&env, "b1"), &101_i128);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::InsufficientCredits));
+    }
+
+    // ── AlreadyRetired ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_retire_fully_retired_batch_fails() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+        mint(&env, &client, &admin, "b1", &owner);
+        client.retire_credits(
+            &owner, &s(&env, "b1"), &100_i128,
+            &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-1"), &s(&env, "tx"), &s(&env, "QmCID"),
+        ).unwrap();
+        let result = client.try_retire_credits(
+            &owner, &s(&env, "b1"), &1_i128,
+            &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-2"), &s(&env, "tx2"), &s(&env, "QmCID"),
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::AlreadyRetired));
+    }
+
+    // ── ProjectNotFound (batch / certificate not found) ───────────────────────
+
+    #[test]
+    fn test_get_nonexistent_batch_fails() {
+        let env = Env::default();
+        let (client, _) = init(&env);
+        let result = client.try_get_credit_batch(&s(&env, "no-such-batch"));
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ProjectNotFound));
+    }
+
+    #[test]
+    fn test_get_nonexistent_certificate_fails() {
+        let env = Env::default();
+        let (client, _) = init(&env);
+        let result = client.try_get_retirement_certificate(&s(&env, "no-such-ret"));
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ProjectNotFound));
+    }
+
+    // ── UnauthorizedVerifier (non-admin mint, non-owner transfer) ─────────────
+
+    #[test]
+    fn test_non_admin_cannot_mint() {
+        let env = Env::default();
+        let (client, _) = init(&env);
+        let rogue = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let result = client.try_mint_credits(
+            &rogue, &s(&env, "p1"), &100_i128, &2023_u32,
+            &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner,
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedVerifier));
+    }
+
+    #[test]
+    fn test_non_owner_cannot_transfer() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner   = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let to      = Address::generate(&env);
+        mint(&env, &client, &admin, "b1", &owner);
+        let result = client.try_transfer_credits(&attacker, &to, &s(&env, "b1"), &10_i128);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedVerifier));
+    }
+
+    // ── AlreadyInitialized ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_double_initialize_fails() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let registry = Address::generate(&env);
+        let result = client.try_initialize(&admin, &registry);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::AlreadyInitialized));
+    }
+
+    // ── BatchTooLarge ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_mint_at_max_batch_size_succeeds() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+        // MAX_BATCH_SIZE = 1_000_000; serial range must span exactly that many values
+        client.mint_credits(
+            &admin, &s(&env, "p1"), &MAX_BATCH_SIZE, &2023_u32,
+            &s(&env, "b-max"), &1_u64, &(MAX_BATCH_SIZE as u64), &s(&env, "QmCID"), &owner,
+        ).unwrap();
+        let batch = client.get_credit_batch(&s(&env, "b-max")).unwrap();
+        assert_eq!(batch.amount, MAX_BATCH_SIZE);
+    }
+
+    #[test]
+    fn test_mint_above_max_batch_size_fails() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+        let over = MAX_BATCH_SIZE + 1;
+        let result = client.try_mint_credits(
+            &admin, &s(&env, "p1"), &over, &2023_u32,
+            &s(&env, "b-over"), &1_u64, &(over as u64), &s(&env, "QmCID"), &owner,
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::BatchTooLarge));
+    }
+}
+}

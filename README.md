@@ -29,6 +29,7 @@
 - [User Roles](#-user-roles)
 - [Credit Lifecycle](#-credit-lifecycle)
 - [Roadmap](#-roadmap)
+- [Changelog](#-changelog)
 - [Contributing](#-contributing)
 - [License](#-license)
 
@@ -613,6 +614,12 @@ git push origin feat/your-feature-name
 - Update documentation
 
 **See:** [CONTRIBUTING.md](CONTRIBUTING.md) for complete guidelines
+
+---
+
+## 📜 Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md) for a full history of changes and releases.
 
 ---
 
