@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ConsoleLogger, ForbiddenException, LogLevel, ValidationPipe, VersioningType } from '@nestjs/common';
 import { AppModule } from './app.module';
+import { PrismaService } from './prisma.service';
 
 /**
  * Minimal JSON logger — wraps NestJS ConsoleLogger so every line emitted to
@@ -75,8 +76,51 @@ async function bootstrap() {
    });
 
   const httpAdapter = app.getHttpAdapter();
+
+  // Liveness — process is alive
   httpAdapter.get('/health', (_req: any, res: any) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  // Readiness — DB and Redis must be reachable
+  httpAdapter.get('/health/ready', async (_req: any, res: any) => {
+    const checks: Record<string, string> = {};
+    let healthy = true;
+
+    // DB check
+    try {
+      const prisma = app.get(PrismaService);
+      await prisma.$queryRaw`SELECT 1`;
+      checks.db = 'ok';
+    } catch (err: any) {
+      checks.db = `error: ${err.message}`;
+      healthy = false;
+    }
+
+    // Redis check
+    try {
+      const Redis = require('ioredis');
+      const redis = new Redis({
+        host:        process.env.REDIS_HOST     || 'localhost',
+        port:        parseInt(process.env.REDIS_PORT || '6379'),
+        password:    process.env.REDIS_PASSWORD || undefined,
+        connectTimeout: 2000,
+        lazyConnect: true,
+      });
+      await redis.connect();
+      await redis.ping();
+      redis.disconnect();
+      checks.redis = 'ok';
+    } catch (err: any) {
+      checks.redis = `error: ${err.message}`;
+      healthy = false;
+    }
+
+    res.status(healthy ? 200 : 503).json({
+      status: healthy ? 'ok' : 'degraded',
+      checks,
+      timestamp: new Date().toISOString(),
+    });
   });
 
   await app.listen(process.env.PORT ?? 3001);
