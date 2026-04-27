@@ -48,6 +48,24 @@ export function calculateCO2Equivalent(tonnes: number): {
   };
 }
 
+/** Get country flag emoji from country name. */
+export function getCountryFlag(country: string): string {
+  const flags: Record<string, string> = {
+    "United States": "🇺🇸",
+    "Brazil": "🇧🇷",
+    "India": "🇮🇳",
+    "China": "🇨🇳",
+    "Indonesia": "🇮🇩",
+    "Mexico": "🇲🇽",
+    "Peru": "🇵🇪",
+    "Colombia": "🇨🇴",
+    "Kenya": "🇰🇪",
+    "Ethiopia": "🇪🇹",
+    // Add more as needed
+  };
+  return flags[country] || "🏳️";
+}
+
 /** Format USDC amount from stroops for display. */
 export function formatUSDC(stroops: bigint | number | string): string {
   return `$${formatStroops(stroops)} USDC`;

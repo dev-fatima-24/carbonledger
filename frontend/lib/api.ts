@@ -49,6 +49,7 @@ export interface MarketListing {
   methodology: string;
   country: string;
   status: string;
+  oracleDaysSinceUpdate?: number;
   createdAt: string;
 }
 
