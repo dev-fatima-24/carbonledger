@@ -315,23 +315,24 @@ impl CarbonCreditContract {
         Ok(())
     }
 
-    /// Permanently and irreversibly retire carbon credits on-chain.
+    /// Permanently retire carbon credits on-chain. Once retired, credits cannot be reversed.
+    ///
+    /// Retired serial numbers are flagged in storage and cannot be reused.
+    /// No admin function can reverse a retirement.
     ///
     /// # Parameters
     /// - `holder`: The address holding the credits to retire
     /// - `batch_id`: The credit batch identifier
     /// - `amount`: Number of credits to retire
-    /// - `retirement_reason`: Reason for retirement (e.g., "Corporate Offset")
+    /// - `reason`: Reason for retirement
     /// - `beneficiary`: Name of the beneficiary
-    /// - `retirement_id`: Unique identifier for this retirement
-    /// - `tx_hash`: Transaction hash for off-chain verification
-    ///
-    /// # Returns
-    /// The retirement certificate record
+    /// - `retire_id`: Unique identifier for this retirement
+    /// - `tx_hash`: Transaction hash for verification
+    /// - `cert_cid`: IPFS CID for certificate
     ///
     /// # Errors
     /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` is zero
-    /// - [`CarbonError::InsufficientCredits`] if batch has fewer active credits than requested
+    /// - [`CarbonError::InsufficientCredits`] if insufficient active credits
     /// - [`CarbonError::AlreadyRetired`] if batch is fully retired
     /// - [`CarbonError::ProjectSuspended`] if batch is suspended
     pub fn retire_credits(
@@ -339,11 +340,11 @@ impl CarbonCreditContract {
         holder: Address,
         batch_id: String,
         amount: i128,
-        retirement_reason: String,
+        reason: String,
         beneficiary: String,
-        retirement_id: String,
+        retire_id: String,
         tx_hash: String,
-        certificate_cid: String,
+        cert_cid: String,
     ) -> Result<RetirementCertificate, CarbonError> {
         // ── checks ────────────────────────────────────────────────────────────
         holder.require_auth();
@@ -408,25 +409,25 @@ impl CarbonCreditContract {
         Self::extend_batch_ttl(&env, &batch_id);
 
         let cert = RetirementCertificate {
-            retirement_id:     retirement_id.clone(),
+            retirement_id:     retire_id.clone(),
             credit_batch_id:   batch_id.clone(),
             project_id:        batch.project_id.clone(),
             amount,
             retired_by:        holder.clone(),
             beneficiary:       beneficiary.clone(),
-            retirement_reason: retirement_reason.clone(),
+            retirement_reason: reason.clone(),
             vintage_year:      batch.vintage_year,
             serial_numbers:    serial_numbers.clone(),
             retired_at:        env.ledger().timestamp(),
             tx_hash:           tx_hash.clone(),
-            certificate_cid:   certificate_cid.clone(),
+            certificate_cid:   cert_cid.clone(),
         };
-        env.storage().persistent().set(&DataKey::Retirement(retirement_id.clone()), &cert);
+        env.storage().persistent().set(&DataKey::Retirement(retire_id.clone()), &cert);
 
         env.events().publish(
             (symbol_short!("c_ledger"), symbol_short!("retired")),
             CreditRetiredEvent {
-                retirement_id: retirement_id.clone(),
+                retirement_id: retire_id.clone(),
                 batch_id: batch_id.clone(),
                 project_id: batch.project_id.clone(),
                 amount,
@@ -512,6 +513,9 @@ impl CarbonCreditContract {
 
     /// Returns a permanent [`RetirementCertificate`] by retirement ID.
     ///
+    /// Retirement certificates are immutable and permanent. Once created,
+    /// they cannot be modified or deleted.
+    ///
     /// # Parameters
     /// - `retirement_id`: The retirement identifier
     ///
@@ -528,6 +532,27 @@ impl CarbonCreditContract {
             .persistent()
             .get(&DataKey::Retirement(retirement_id))
             .ok_or(CarbonError::ProjectNotFound)
+    }
+
+    /// Attempts to undo a retirement. Always fails with RetirementIrreversible.
+    ///
+    /// This function exists to document that no code path can undo a retirement.
+    /// Retirements are permanent by design.
+    ///
+    /// # Parameters
+    /// - `_admin`: Admin address (unused)
+    /// - `_retire_id`: Retirement ID (unused)
+    ///
+    /// # Returns
+    /// Always returns [`CarbonError::RetirementIrreversible`]
+    pub fn undo_retire(
+        _env: Env,
+        _admin: Address,
+        _retire_id: String,
+    ) -> Result<(), CarbonError> {
+        // Retirements are permanent and irreversible by design.
+        // No admin function can undo a retirement.
+        Err(CarbonError::RetirementIrreversible)
     }
 
     /// Returns `true` if the serial range `[serial_start, serial_end]` does NOT
@@ -1201,6 +1226,159 @@ mod edge_case_tests {
             &s(&env, "b-over"), &1_u64, &(over as u64), &s(&env, "QmCID"), &owner,
         );
         assert_eq!(result.unwrap_err(), Ok(CarbonError::BatchTooLarge));
+    }
+
+    // ── Retirement Irreversibility Tests ──────────────────────────────────────
+
+    #[test]
+    fn test_retirement_reversal_always_fails() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+
+        // Mint and retire credits
+        mint(&env, &client, &admin, "b1", &owner);
+        client.retire_credits(
+            &owner, &s(&env, "b1"), &100_i128, &s(&env, "offset"), 
+            &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx"), &s(&env, "QmCID")
+        ).unwrap();
+
+        // Attempt to reverse the retirement - must fail
+        let result = client.try_undo_retire(&admin, &s(&env, "ret-001"));
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::RetirementIrreversible));
+    }
+
+    #[test]
+    fn test_admin_cannot_reverse_retirement() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+
+        // Mint and retire credits
+        mint(&env, &client, &admin, "b1", &owner);
+        client.retire_credits(
+            &owner, &s(&env, "b1"), &50_i128, &s(&env, "offset"), 
+            &s(&env, "Corp"), &s(&env, "ret-002"), &s(&env, "tx"), &s(&env, "QmCID")
+        ).unwrap();
+
+        // Even admin cannot reverse retirement
+        let result = client.try_undo_retire(&admin, &s(&env, "ret-002"));
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::RetirementIrreversible));
+
+        // Verify retirement certificate still exists and is unchanged
+        let cert = client.get_retirement_certificate(&s(&env, "ret-002")).unwrap();
+        assert_eq!(cert.amount, 50);
+        assert_eq!(cert.retirement_id, s(&env, "ret-002"));
+    }
+
+    #[test]
+    fn test_retired_serial_numbers_permanently_flagged() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+
+        // Mint batch with serials 1-100
+        client.mint_credits(
+            &admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), 
+            &1_u64, &100_u64, &s(&env, "cid"), &owner
+        ).unwrap();
+
+        // Retire 50 credits (serials 1-50)
+        let cert = client.retire_credits(
+            &owner, &s(&env, "b1"), &50_i128, &s(&env, "offset"), 
+            &s(&env, "Corp"), &s(&env, "ret-003"), &s(&env, "tx"), &s(&env, "QmCID")
+        ).unwrap();
+
+        // Verify serial numbers are recorded in certificate
+        assert_eq!(cert.serial_numbers.len(), 50);
+        assert_eq!(cert.serial_numbers.get(0).unwrap(), 1);
+        assert_eq!(cert.serial_numbers.get(49).unwrap(), 50);
+
+        // Verify batch status reflects retirement
+        let batch = client.get_credit_batch(&s(&env, "b1")).unwrap();
+        assert_eq!(batch.status, CreditStatus::PartiallyRetired);
+
+        // Attempt to mint new batch with overlapping serials - should fail
+        let result = client.try_mint_credits(
+            &admin, &s(&env, "p2"), &50_i128, &2023_u32, &s(&env, "b2"), 
+            &25_u64, &75_u64, &s(&env, "cid2"), &owner
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_retirement_certificate_immutable() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+
+        // Mint and retire
+        mint(&env, &client, &admin, "b1", &owner);
+        let original_cert = client.retire_credits(
+            &owner, &s(&env, "b1"), &100_i128, &s(&env, "offset"), 
+            &s(&env, "Corp"), &s(&env, "ret-004"), &s(&env, "tx123"), &s(&env, "QmCID")
+        ).unwrap();
+
+        // Attempt reversal
+        let _ = client.try_undo_retire(&admin, &s(&env, "ret-004"));
+
+        // Verify certificate is unchanged
+        let cert = client.get_retirement_certificate(&s(&env, "ret-004")).unwrap();
+        assert_eq!(cert.retirement_id, original_cert.retirement_id);
+        assert_eq!(cert.amount, original_cert.amount);
+        assert_eq!(cert.retired_by, original_cert.retired_by);
+        assert_eq!(cert.tx_hash, original_cert.tx_hash);
+        assert_eq!(cert.serial_numbers.len(), 100);
+    }
+
+    #[test]
+    fn test_no_code_path_can_undo_retirement() {
+        let env = Env::default();
+        let (client, admin) = init(&env);
+        let owner = Address::generate(&env);
+
+        // Mint 1000 credits
+        client.mint_credits(
+            &admin, &s(&env, "p1"), &1000_i128, &2023_u32, &s(&env, "b1"), 
+            &1_u64, &1000_u64, &s(&env, "cid"), &owner
+        ).unwrap();
+
+        // Retire 600 credits
+        client.retire_credits(
+            &owner, &s(&env, "b1"), &600_i128, &s(&env, "offset"), 
+            &s(&env, "Corp"), &s(&env, "ret-005"), &s(&env, "tx"), &s(&env, "QmCID")
+        ).unwrap();
+
+        // Verify batch state
+        let batch_after_retirement = client.get_credit_batch(&s(&env, "b1")).unwrap();
+        assert_eq!(batch_after_retirement.status, CreditStatus::PartiallyRetired);
+        assert_eq!(batch_after_retirement.amount, 1000); // Total amount unchanged
+
+        // Attempt reversal
+        let _ = client.try_undo_retire(&admin, &s(&env, "ret-005"));
+
+        // Verify batch state is still the same - no change
+        let batch_after_reversal_attempt = client.get_credit_batch(&s(&env, "b1")).unwrap();
+        assert_eq!(batch_after_reversal_attempt.status, CreditStatus::PartiallyRetired);
+        assert_eq!(batch_after_reversal_attempt.amount, 1000);
+
+        // Verify only 400 credits remain active (1000 - 600)
+        // Attempting to retire more than 400 should fail
+        let result = client.try_retire_credits(
+            &owner, &s(&env, "b1"), &500_i128, &s(&env, "offset2"), 
+            &s(&env, "Corp"), &s(&env, "ret-006"), &s(&env, "tx2"), &s(&env, "QmCID2")
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::InsufficientCredits));
+
+        // Retiring exactly 400 should succeed
+        client.retire_credits(
+            &owner, &s(&env, "b1"), &400_i128, &s(&env, "offset3"), 
+            &s(&env, "Corp"), &s(&env, "ret-007"), &s(&env, "tx3"), &s(&env, "QmCID3")
+        ).unwrap();
+
+        // Now batch should be fully retired
+        let final_batch = client.get_credit_batch(&s(&env, "b1")).unwrap();
+        assert_eq!(final_batch.status, CreditStatus::FullyRetired);
     }
 }
 }
