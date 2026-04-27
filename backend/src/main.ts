@@ -76,10 +76,8 @@ async function bootstrap() {
    });
 
   const httpAdapter = app.getHttpAdapter();
-
-  // Liveness — process is alive
-  httpAdapter.get('/health', (_req: any, res: any) => {
-    res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+  httpAdapter.get("/health", (_req: any, res: any) => {
+    res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
   // Readiness — DB and Redis must be reachable
