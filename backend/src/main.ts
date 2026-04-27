@@ -35,6 +35,10 @@ async function bootstrap() {
     logger: new JsonLogger(undefined, { logLevels: [logLevel] }),
   });
 
+  const bodyLimit = process.env.BODY_SIZE_LIMIT ?? '10kb';
+  app.use(express.json({ limit: bodyLimit }));
+  app.use(express.urlencoded({ extended: true, limit: bodyLimit }));
+
   app.setGlobalPrefix('api/v1');
 
   // Header-based versioning: Accept-Version: 1
