@@ -29,13 +29,18 @@ export default function BulkPurchaseCart() {
 
   async function handlePurchase() {
     if (!walletKey || items.length === 0) return;
-    setTxStatus("pending");
+    setTxStatus("building");
     try {
-      setTxStatus("submitted");
+      await new Promise(r => setTimeout(r, 600));
+      setTxStatus("signing");
+      await new Promise(r => setTimeout(r, 1000));
+      setTxStatus("submitting");
       const result = await bulkPurchase(
         items.map(i => ({ listingId: i.listing.listingId, amount: i.amount })),
         walletKey,
       );
+      setTxStatus("polling");
+      await new Promise(r => setTimeout(r, 1500));
       setTxHash(result.txHash);
       setTxStatus("confirmed");
       clearCart();
@@ -46,7 +51,7 @@ export default function BulkPurchaseCart() {
     }
   }
 
-  const busy = txStatus === "pending" || txStatus === "submitted";
+  const busy = txStatus && !["confirmed", "failed"].includes(txStatus);
 
   return (
     <div style={{ background: colors.surface, border: `1px solid ${colors.neutral[200]}`, borderRadius: "0.75rem", padding: "1.5rem" }}>
@@ -82,7 +87,7 @@ export default function BulkPurchaseCart() {
                   </span>
                   <button
                     onClick={() => removeItem(listing.listingId)}
-                    disabled={busy}
+                    disabled={!!busy}
                     aria-label="Remove"
                     style={{ background: "transparent", border: "none", color: colors.neutral[400], cursor: "pointer", fontSize: "1rem", padding: "0.2rem" }}
                   >
@@ -104,7 +109,7 @@ export default function BulkPurchaseCart() {
           {/* Tx status */}
           {txStatus && (
             <div style={{ marginTop: "1rem" }}>
-              <TransactionStatus status={txStatus} txHash={txHash ?? undefined} />
+              <TransactionStatus status={txStatus} txHash={txHash ?? undefined} onRetry={txStatus === "failed" ? handlePurchase : undefined} />
             </div>
           )}
 
@@ -115,10 +120,9 @@ export default function BulkPurchaseCart() {
                 Connect Wallet to Purchase
               </button>
             ) : (
-              <button onClick={handlePurchase} disabled={busy || txStatus === "confirmed"} style={btnStyle(busy || txStatus === "confirmed" ? colors.neutral[300] : colors.primary[600], busy)}>
-                {txStatus === "pending"   ? "Preparing…"   :
-                 txStatus === "submitted" ? "Confirming…"  :
-                 txStatus === "confirmed" ? "Purchase Complete ✓" :
+              <button onClick={handlePurchase} disabled={!!busy || txStatus === "confirmed"} style={btnStyle(busy || txStatus === "confirmed" ? colors.neutral[300] : colors.primary[600], !!busy)}>
+                {txStatus === "confirmed" ? "Purchase Complete ✓" :
+                 busy ? "Processing…" :
                  `Purchase ${formatTonnes(totalTonnes)} for $${formatStroops(totalStroops)} USDC`}
               </button>
             )}

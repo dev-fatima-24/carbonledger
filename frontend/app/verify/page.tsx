@@ -30,8 +30,17 @@ export default function VerifyPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!walletKey || !projectId) return;
-    setTxStatus("pending");
+    
+    setTxStatus("building");
     try {
+      // Simulate building phase
+      await new Promise(r => setTimeout(r, 800));
+      
+      setTxStatus("signing");
+      // In a real app, we would sign with Freighter here
+      await new Promise(r => setTimeout(r, 1200));
+
+      setTxStatus("submitting");
       const endpoint = action === "approve" ? "verify" : "reject";
       const res = await fetch(`${API_URL}/projects/${projectId}/${endpoint}`, {
         method: "POST",
@@ -40,6 +49,10 @@ export default function VerifyPage() {
       });
       if (!res.ok) throw new Error((await res.json()).message);
       const data = await res.json();
+      
+      setTxStatus("polling");
+      await new Promise(r => setTimeout(r, 2000));
+
       setTxHash(data.txHash);
       setTxStatus("confirmed");
       addToast({ type: "success", title: `Project ${action === "approve" ? "verified" : "rejected"}`, txHash: data.txHash });
