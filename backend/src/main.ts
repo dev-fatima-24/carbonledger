@@ -1,5 +1,5 @@
 import { NestFactory } from '@nestjs/core';
-import { ConsoleLogger, ForbiddenException, LogLevel, ValidationPipe } from '@nestjs/common';
+import { ConsoleLogger, ForbiddenException, LogLevel, ValidationPipe, VersioningType } from '@nestjs/common';
 import { AppModule } from './app.module';
 
 /**
@@ -35,6 +35,13 @@ async function bootstrap() {
   });
 
   app.setGlobalPrefix('api/v1');
+
+  // Header-based versioning: Accept-Version: 1
+  // All existing routes are VERSION_NEUTRAL (no @Version decorator needed).
+  app.enableVersioning({
+    type: VersioningType.HEADER,
+    header: 'Accept-Version',
+  });
 
   // Fix mass assignment (API3): strip unknown fields globally
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));

@@ -1,5 +1,6 @@
 import { NestFactory } from "@nestjs/core";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
+import { VersioningType } from "@nestjs/common";
 import { writeFileSync } from "fs";
 import { resolve } from "path";
 import { AppModule } from "./app.module";
@@ -7,11 +8,16 @@ import { AppModule } from "./app.module";
 async function exportSpec() {
   const app = await NestFactory.create(AppModule, { logger: false });
   app.setGlobalPrefix("api/v1");
+  app.enableVersioning({ type: VersioningType.HEADER, header: "Accept-Version" });
 
   const config = new DocumentBuilder()
     .setTitle("CarbonLedger API")
     .setDescription(
       "Verified carbon credits. Permanent retirement. Full provenance.\n\n" +
+      "## Versioning\n" +
+      "All routes are served under `/api/v1/`. " +
+      "Clients may also pass `Accept-Version: 1` to explicitly request v1. " +
+      "See [API Deprecation Policy](../docs/api-versioning.md) for the full lifecycle policy.\n\n" +
       "## CarbonError codes\n" +
       "| Code | Name |\n" +
       "|------|------|\n" +
@@ -35,6 +41,7 @@ async function exportSpec() {
       "| 18 | InvalidSerialRange |"
     )
     .setVersion("1.0")
+    .addApiKey({ type: "apiKey", in: "header", name: "Accept-Version", description: "API version (e.g. 1)" }, "Accept-Version")
     .addBearerAuth()
     .build();
 
