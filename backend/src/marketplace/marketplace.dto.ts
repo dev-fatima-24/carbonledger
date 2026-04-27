@@ -1,11 +1,11 @@
-import { IsString, IsInt, IsPositive, IsOptional, Min, Max } from "class-validator";
+import { IsString, IsInt, IsPositive, IsOptional, Min, Max, ArrayMaxSize, ArrayMinSize } from "class-validator";
 import { Type } from "class-transformer";
 
 export class CreateListingDto {
   @IsString() listingId: string;
   @IsString() projectId: string;
   @IsString() batchId: string;
-  @IsString() seller: string;
+  // seller is intentionally omitted — always set from req.user.publicKey in the controller
   @IsInt() @IsPositive() @Type(() => Number) amountAvailable: number;
   @IsString() pricePerCredit: string;
   @IsInt() @Min(1990) @Max(2100) @Type(() => Number) vintageYear: number;
@@ -16,13 +16,23 @@ export class CreateListingDto {
 export class PurchaseDto {
   @IsString() listingId: string;
   @IsInt() @IsPositive() @Type(() => Number) amount: number;
-  @IsString() buyerPublicKey: string;
+  // buyerPublicKey is set from req.user.publicKey in the controller
+  buyerPublicKey?: string;
 }
 
 export class BulkPurchaseDto {
-  @IsString({ each: true }) listingIds: string[];
-  @IsInt({ each: true })    amounts: number[];
-  @IsString() buyerPublicKey: string;
+  @IsString({ each: true })
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)  // Fix API4: cap bulk operations to prevent resource exhaustion
+  listingIds: string[];
+
+  @IsInt({ each: true })
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)
+  amounts: number[];
+
+  // buyerPublicKey is set from req.user.publicKey in the controller
+  buyerPublicKey?: string;
 }
 
 export class ListingsQueryDto {

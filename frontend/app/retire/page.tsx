@@ -78,11 +78,14 @@ export default function RetirePage() {
       <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
         <div>
           <label style={{ fontSize: "0.875rem", fontWeight: 600, color: colors.neutral[700], display: "block", marginBottom: "0.4rem" }}>
-            Amount to Retire (tonnes CO₂e)
+            Amount to Retire (tonnes CO₂e) — minimum 0.01 tCO₂e
           </label>
           <input
-            type="number" min={1} value={amount}
-            onChange={e => setAmount(Math.max(1, Number(e.target.value)))}
+            type="number" min={0.01} step={0.01} value={amount}
+            onChange={e => {
+              const v = parseFloat(parseFloat(e.target.value).toFixed(2));
+              setAmount(Math.max(0.01, v || 0.01));
+            }}
             style={inputStyle}
           />
         </div>

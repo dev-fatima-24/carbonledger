@@ -1,5 +1,8 @@
-import { IsString, IsInt, IsOptional, Min, Max, IsBoolean, IsEnum, IsArray } from "class-validator";
+import { IsString, IsInt, IsOptional, Min, Max, IsBoolean, IsEnum, IsArray, Matches } from "class-validator";
 import { Type, Transform } from "class-transformer";
+
+// Valid IPFS CID: CIDv0 (Qm...) or CIDv1 (bafy...) — rejects URLs and arbitrary strings
+const CID_REGEX = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{58,})$/;
 
 export class RegisterProjectDto {
   @IsString() projectId: string;
@@ -8,7 +11,7 @@ export class RegisterProjectDto {
   @IsString() methodology: string;
   @IsString() country: string;
   @IsString() projectType: string;
-  @IsString() metadataCid: string;
+  @IsString() @Matches(CID_REGEX, { message: "metadataCid must be a valid IPFS CID (CIDv0 or CIDv1)" }) metadataCid: string;
   @IsString() verifierAddress: string;
   @IsString() ownerAddress: string;
   @IsInt() @Min(1990) @Max(2027) @Type(() => Number) vintageYear: number;

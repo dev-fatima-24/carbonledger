@@ -1,6 +1,5 @@
 import { NestFactory } from '@nestjs/core';
-import { ConsoleLogger, LogLevel } from '@nestjs/common';
-import * as express from 'express';
+import { ConsoleLogger, ForbiddenException, LogLevel, ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 
 /**
@@ -41,6 +40,19 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api/v1');
 
+  // Fix mass assignment (API3): strip unknown fields globally
+  app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));
+
+  // Fix API6: limit request body to 1 MB to prevent resource exhaustion
+  app.use(require('express').json({ limit: '1mb' }));
+  app.use(require('express').urlencoded({ limit: '1mb', extended: true }));
+
+  // Ensure all responses use keep-alive to prevent ECONNRESET under load
+  app.use((_req: any, res: any, next: any) => {
+    res.setHeader('Connection', 'keep-alive');
+    next();
+  });
+
   const allowedOrigins = process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
     : [process.env.FRONTEND_URL || 'http://localhost:3000'];
@@ -60,8 +72,8 @@ async function bootstrap() {
    });
 
   const httpAdapter = app.getHttpAdapter();
-  httpAdapter.get('/health', (_req: any, res: any) => {
-    res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+  httpAdapter.get("/health", (_req: any, res: any) => {
+    res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
   await app.listen(process.env.PORT ?? 3001);

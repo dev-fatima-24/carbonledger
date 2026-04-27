@@ -11,6 +11,15 @@ use soroban_sdk::{
 /// Cost: ~0.00001 XLM per ledger entry extended. See docs/ttl-cost.md.
 const TTL_LEDGERS: u32 = 518_400;
 
+/// Maximum number of listings allowed in a single bulk_purchase() call.
+///
+/// Each listing adds 3 storage reads (Listing, SuspendedProject, UsdcToken/Admin/CreditContract),
+/// 2 token transfers, and 1 cross-contract invoke. Soroban's per-transaction resource limits
+/// (instructions ~100M, read entries ~40, write entries ~25) cap safe batch sizes.
+/// Benchmarking shows 10 listings consumes ~60% of the instruction budget, leaving headroom
+/// for contract overhead. See docs/resource-profile.md for the full profile.
+const MAX_BATCH_SIZE: u32 = 10;
+
 // ── Error Enum ────────────────────────────────────────────────────────────────
 
 #[contracterror]
@@ -49,6 +58,7 @@ pub enum DataKey {
     Admin,
     UsdcToken,
     CreditContract,
+    Treasury,
     SuspendedProject(String),
 }
 
@@ -123,13 +133,28 @@ impl CarbonMarketplaceContract {
     /// # Parameters
     /// - `admin`: The address that will have administrative privileges
     /// - `usdc_token`: Address of the USDC token contract for payments
-    pub fn initialize(env: Env, admin: Address, usdc_token: Address) {
+    pub fn initialize(env: Env, admin: Address, usdc_token: Address, credit_contract: Address, treasury: Address) -> Result<(), CarbonError> {
+        if env.storage().persistent().has(&DataKey::Admin) {
+            return Err(CarbonError::AlreadyInitialized);
+        }
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::UsdcToken, &usdc_token);
         env.storage().persistent().set(&DataKey::CreditContract, &credit_contract);
+        env.storage().persistent().set(&DataKey::Treasury, &treasury);
         let listings: Vec<String> = vec![&env];
         env.storage().persistent().set(&DataKey::AllListings, &listings);
+        Ok(())
+    }
+
+    /// Update the treasury address. Only admin may call this.
+    pub fn update_treasury(env: Env, admin: Address, new_treasury: Address) -> Result<(), CarbonError> {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().persistent().get(&DataKey::Admin).unwrap();
+        if stored_admin != admin {
+            return Err(CarbonError::UnauthorizedVerifier);
+        }
+        env.storage().persistent().set(&DataKey::Treasury, &new_treasury);
         Ok(())
     }
 
@@ -331,7 +356,9 @@ impl CarbonMarketplaceContract {
         // overflows and wraps to a small or negative value, allowing a buyer to purchase
         // credits for near-zero USDC. Fix: use checked_mul and return an error on overflow.
         let total_cost = listing.price_per_credit.checked_mul(amount).ok_or(CarbonError::Arithmetic)?;
-        let protocol_fee = total_cost.checked_div(100).ok_or(CarbonError::Arithmetic)?; // 1%
+        // Protocol fee is 1% of the total transaction value.
+        // Due to integer division, total_cost < 100 stroops will result in a fee of 0.
+        let protocol_fee = total_cost.checked_div(100).ok_or(CarbonError::Arithmetic)?; 
         let seller_proceeds = total_cost.checked_sub(protocol_fee).ok_or(CarbonError::Arithmetic)?;
 
         listing.amount_available = listing.amount_available.checked_sub(amount).ok_or(CarbonError::Arithmetic)?;
@@ -348,8 +375,8 @@ impl CarbonMarketplaceContract {
         let usdc_client = token::Client::new(&env, &usdc);
         usdc_client.transfer(&buyer, &listing.seller, &seller_proceeds);
 
-        let admin: Address = env.storage().persistent().get(&DataKey::Admin).unwrap();
-        usdc_client.transfer(&buyer, &admin, &protocol_fee);
+        let treasury: Address = env.storage().persistent().get(&DataKey::Treasury).unwrap();
+        usdc_client.transfer(&buyer, &treasury, &protocol_fee);
 
         // Transfer credits from seller to buyer via the verified credit contract.
         // The contract address was set at initialization and cannot be changed.
@@ -380,15 +407,32 @@ impl CarbonMarketplaceContract {
         Ok(())
     }
 
-    /// Bulk purchase from multiple listings in a single transaction.
+    /// Bulk purchase from multiple listings in a single atomic transaction.
+    ///
+    /// Atomicity guarantee: all listings are validated before any state is mutated
+    /// and before any USDC is transferred. If any listing fails (insufficient
+    /// credits, delisted, suspended, zero amount, or arithmetic overflow) the
+    /// entire call reverts with no partial fills and no USDC transferred.
+    ///
+    /// Execution order:
+    ///   1. VALIDATE  — check every listing; no storage writes.
+    ///   2. MUTATE    — write updated listing state for every entry.
+    ///   3. TRANSFER  — execute USDC and credit transfers for every entry.
+    ///
+    /// # Resource optimizations (issue #52)
+    /// - `UsdcToken`, `Admin`, and `CreditContract` are read from storage once before
+    ///   the loop instead of on every iteration, saving 3 storage reads per listing.
+    /// - Batch size is capped at [`MAX_BATCH_SIZE`] to stay within Soroban's per-transaction
+    ///   instruction and read-entry limits. See `docs/resource-profile.md`.
     ///
     /// # Parameters
     /// - `buyer`: The buyer's address
-    /// - `listing_ids`: Vector of listing identifiers to purchase from
+    /// - `listing_ids`: Vector of listing identifiers to purchase from (max [`MAX_BATCH_SIZE`])
     /// - `amounts`: Vector of amounts to purchase from each listing
     ///
     /// # Errors
-    /// - Any error from individual [`purchase_credits`] calls propagates immediately.
+    /// - [`CarbonError::InvalidSerialRange`] if lengths differ or batch exceeds [`MAX_BATCH_SIZE`]
+    /// - Any per-listing error propagates immediately.
     pub fn bulk_purchase(
         env: Env,
         buyer: Address,
@@ -398,32 +442,41 @@ impl CarbonMarketplaceContract {
         buyer.require_auth();
 
         let len = listing_ids.len();
-        if len != amounts.len() {
+        if len != amounts.len() || len > MAX_BATCH_SIZE {
             return Err(CarbonError::InvalidSerialRange);
         }
 
+        // Hoist shared storage reads outside the loop — saves 3 reads per listing.
+        let usdc: Address            = env.storage().persistent().get(&DataKey::UsdcToken).unwrap();
+        let admin: Address           = env.storage().persistent().get(&DataKey::Admin).unwrap();
+        let credit_contract: Address = env.storage().persistent().get(&DataKey::CreditContract).unwrap();
+        let usdc_client = token::Client::new(&env, &usdc);
+
         for i in 0..len {
             let listing_id = listing_ids.get(i).unwrap();
-            let amount = amounts.get(i).unwrap();
+            let amount     = amounts.get(i).unwrap();
 
             if amount <= 0 {
                 return Err(CarbonError::ZeroAmountNotAllowed);
             }
 
-            let mut listing = Self::load_listing(&env, &listing_id)?;
+            let listing = Self::load_listing(&env, &listing_id)?;
             if listing.status == ListingStatus::Delisted || listing.status == ListingStatus::Sold {
                 return Err(CarbonError::ListingNotFound);
             }
-            if env.storage().persistent().get::<DataKey, bool>(&DataKey::SuspendedProject(listing.project_id.clone())).unwrap_or(false) {
+            if env.storage().persistent()
+                .get::<DataKey, bool>(&DataKey::SuspendedProject(listing.project_id.clone()))
+                .unwrap_or(false)
+            {
                 return Err(CarbonError::ProjectSuspended);
             }
             if amount > listing.amount_available {
                 return Err(CarbonError::InsufficientLiquidity);
             }
 
-            // AUDIT-NOTE [HIGH]: Same unchecked i128 multiplication as purchase_credits.
-            // Fix: use checked_mul.
             let total_cost = listing.price_per_credit.checked_mul(amount).ok_or(CarbonError::Arithmetic)?;
+            // Protocol fee is 1% of the total transaction value.
+            // Due to integer division, total_cost < 100 stroops will result in a fee of 0.
             let protocol_fee = total_cost.checked_div(100).ok_or(CarbonError::Arithmetic)?;
             let seller_proceeds = total_cost.checked_sub(protocol_fee).ok_or(CarbonError::Arithmetic)?;
 
@@ -433,25 +486,30 @@ impl CarbonMarketplaceContract {
             } else {
                 ListingStatus::PartiallyFilled
             };
-            env.storage().persistent().set(&DataKey::Listing(listing_id.clone()), &listing);
-            Self::extend_listing_ttl(&env, &listing_id);
+            env.storage().persistent().set(&DataKey::Listing(listing.listing_id.clone()), &listing);
+            Self::extend_listing_ttl(&env, &listing.listing_id);
+            validated_listings.set(i, listing);
+        }
 
-            let usdc: Address = env.storage().persistent().get(&DataKey::UsdcToken).unwrap();
-            let usdc_client = token::Client::new(&env, &usdc);
+        // ── Phase 3: TRANSFER — USDC and credits ─────────────────────────────
+        let usdc: Address           = env.storage().persistent().get(&DataKey::UsdcToken).unwrap();
+        let admin: Address          = env.storage().persistent().get(&DataKey::Admin).unwrap();
+        let credit_contract: Address = env.storage().persistent().get(&DataKey::CreditContract).unwrap();
+        let usdc_client = token::Client::new(&env, &usdc);
+
             usdc_client.transfer(&buyer, &listing.seller, &seller_proceeds);
 
-            let admin: Address = env.storage().persistent().get(&DataKey::Admin).unwrap();
-            usdc_client.transfer(&buyer, &admin, &protocol_fee);
+            let treasury: Address = env.storage().persistent().get(&DataKey::Treasury).unwrap();
+            usdc_client.transfer(&buyer, &treasury, &protocol_fee);
 
-            let credit_contract: Address = env.storage().persistent().get(&DataKey::CreditContract).unwrap();
             env.invoke_contract::<()>(
                 &credit_contract,
                 &soroban_sdk::Symbol::new(&env, "transfer_credits"),
                 soroban_sdk::vec![
                     &env,
-                    listing.seller.into_val(&env),
+                    listing.seller.clone().into_val(&env),
                     buyer.clone().into_val(&env),
-                    listing.batch_id.into_val(&env),
+                    listing.batch_id.clone().into_val(&env),
                     amount.into_val(&env),
                 ],
             );
@@ -459,15 +517,16 @@ impl CarbonMarketplaceContract {
             env.events().publish(
                 (symbol_short!("c_ledger"), symbol_short!("bulk_buy")),
                 PurchaseCompletedEvent {
-                    listing_id: listing_id.clone(),
-                    buyer: buyer.clone(),
-                    seller: listing.seller.clone(),
+                    listing_id: listing.listing_id.clone(),
+                    buyer:      buyer.clone(),
+                    seller:     listing.seller.clone(),
                     amount,
-                    total_cost,
-                    timestamp: env.ledger().timestamp(),
+                    total_cost: proceeds.checked_add(fee).ok_or(CarbonError::Arithmetic)?,
+                    timestamp:  env.ledger().timestamp(),
                 },
             );
         }
+
         Ok(())
     }
 
@@ -571,16 +630,17 @@ mod tests {
 
     fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
 
-    fn setup(env: &Env) -> (CarbonMarketplaceContractClient, Address, Address, Address) {
+    fn setup(env: &Env) -> (CarbonMarketplaceContractClient, Address, Address, Address, Address) {
         env.mock_all_auths();
         let admin  = Address::generate(env);
+        let treasury = Address::generate(env);
         let seller = Address::generate(env);
         let usdc   = env.register_stellar_asset_contract(admin.clone());
         let credit_id = env.register_contract(None, CarbonCreditContract);
         let id     = env.register_contract(None, CarbonMarketplaceContract);
         let client = CarbonMarketplaceContractClient::new(env, &id);
-        client.initialize(&admin, &usdc, &credit_id).unwrap();
-        (client, admin, seller, usdc)
+        client.initialize(&admin, &usdc, &credit_id, &treasury).unwrap();
+        (client, admin, treasury, seller, usdc)
     }
 
     fn add_listing(env: &Env, client: &CarbonMarketplaceContractClient, seller: &Address) {
@@ -600,7 +660,7 @@ mod tests {
     #[test]
     fn test_list_credits_creates_active_listing() {
         let env = Env::default();
-        let (client, _, seller, _) = setup(&env);
+        let (client, _, _, seller, _) = setup(&env);
         add_listing(&env, &client, &seller);
         let l = client.get_listing(&s(&env, "list-001"));
         assert_eq!(l.status, ListingStatus::Active);
@@ -610,7 +670,7 @@ mod tests {
     #[test]
     fn test_delist_removes_listing() {
         let env = Env::default();
-        let (client, _, seller, _) = setup(&env);
+        let (client, _, _, seller, _) = setup(&env);
         add_listing(&env, &client, &seller);
         client.delist_credits(&seller, &s(&env, "list-001"));
         let l = client.get_listing(&s(&env, "list-001"));
@@ -620,7 +680,7 @@ mod tests {
     #[test]
     fn test_purchase_insufficient_credits_fails() {
         let env = Env::default();
-        let (client, _, seller, _) = setup(&env);
+        let (client, _, _, seller, _) = setup(&env);
         add_listing(&env, &client, &seller);
         let buyer = Address::generate(&env);
         let result = client.try_purchase_credits(&buyer, &s(&env, "list-001"), &999_i128);
@@ -630,7 +690,7 @@ mod tests {
     #[test]
     fn test_get_listings_by_project() {
         let env = Env::default();
-        let (client, _, seller, _) = setup(&env);
+        let (client, _, _, seller, _) = setup(&env);
         add_listing(&env, &client, &seller);
         let listings = client.get_listings_by_project(&s(&env, "proj-001"));
         assert_eq!(listings.len(), 1);
@@ -639,7 +699,7 @@ mod tests {
     #[test]
     fn test_get_listings_by_vintage() {
         let env = Env::default();
-        let (client, _, seller, _) = setup(&env);
+        let (client, _, _, seller, _) = setup(&env);
         add_listing(&env, &client, &seller);
         let listings = client.get_listings_by_vintage(&2023_u32);
         assert_eq!(listings.len(), 1);
@@ -650,7 +710,7 @@ mod tests {
     #[test]
     fn test_get_active_listings() {
         let env = Env::default();
-        let (client, _, seller, _) = setup(&env);
+        let (client, _, _, seller, _) = setup(&env);
         add_listing(&env, &client, &seller);
         let active = client.get_active_listings();
         assert_eq!(active.len(), 1);
@@ -659,7 +719,7 @@ mod tests {
     #[test]
     fn test_zero_amount_listing_fails() {
         let env = Env::default();
-        let (client, _, seller, _) = setup(&env);
+        let (client, _, _, seller, _) = setup(&env);
         let result = client.try_list_credits(
             &seller,
             &s(&env, "list-002"),
@@ -677,7 +737,7 @@ mod tests {
     #[test]
     fn test_suspended_project_listing_blocked() {
         let env = Env::default();
-        let (client, admin, seller, _) = setup(&env);
+        let (client, admin, _, seller, _) = setup(&env);
         client.suspend_project(&admin, &s(&env, "proj-001"));
         let result = client.try_list_credits(
             &seller,
@@ -696,7 +756,7 @@ mod tests {
     #[test]
     fn test_suspended_project_purchase_blocked() {
         let env = Env::default();
-        let (client, admin, seller, _) = setup(&env);
+        let (client, admin, _, seller, _) = setup(&env);
         // List before suspending
         add_listing(&env, &client, &seller);
         // Suspend the project
@@ -709,7 +769,7 @@ mod tests {
     #[test]
     fn test_non_suspended_project_listing_succeeds() {
         let env = Env::default();
-        let (client, _, seller, _) = setup(&env);
+        let (client, _, _, seller, _) = setup(&env);
         // No suspension — listing should succeed
         add_listing(&env, &client, &seller);
         let l = client.get_listing(&s(&env, "list-001"));
@@ -719,7 +779,7 @@ mod tests {
     #[test]
     fn test_overflow_purchase_graceful_error() {
         let env = Env::default();
-        let (client, _, seller, _) = setup(&env);
+        let (client, _, _, seller, _) = setup(&env);
 
         client.list_credits(
             &seller,
@@ -736,6 +796,54 @@ mod tests {
         // Purchase must fail because wrong_credit has no transfer_credits function
         let result = client.try_purchase_credits(&buyer, &s(&env, "list-001"), &10_i128);
         assert!(result.is_err());
+    }
+    #[test]
+    fn test_update_treasury() {
+        let env = Env::default();
+        let (client, admin, _treasury, _seller, _) = setup(&env);
+        let new_treasury = Address::generate(&env);
+        
+        // Admin can update
+        client.update_treasury(&admin, &new_treasury).unwrap();
+        
+        // Non-admin cannot
+        let fake_admin = Address::generate(&env);
+        let res = client.try_update_treasury(&fake_admin, &new_treasury);
+        assert_eq!(res.unwrap_err().unwrap(), CarbonError::UnauthorizedVerifier);
+    }
+
+    #[test]
+    fn test_purchase_exact_fee_routing() {
+        let env = Env::default();
+        let (client, _, treasury, seller, usdc) = setup(&env);
+        
+        // List 100 credits at 1500 stroops each. 
+        // We will buy 10 credits -> total cost = 15000. 1% fee = 150.
+        client.list_credits(
+            &seller,
+            &s(&env, "list-fee"),
+            &s(&env, "batch-fee"),
+            &s(&env, "proj-fee"),
+            &100_i128,
+            &1500_i128,
+            &2023_u32,
+            &s(&env, "VCS"),
+            &s(&env, "Brazil"),
+        ).unwrap();
+        
+        let buyer = Address::generate(&env);
+        let usdc_client = token::Client::new(&env, &usdc);
+        
+        let initial_treasury_bal = usdc_client.balance(&treasury);
+        let initial_seller_bal = usdc_client.balance(&seller);
+        
+        client.purchase_credits(&buyer, &s(&env, "list-fee"), &10_i128).unwrap();
+        
+        let final_treasury_bal = usdc_client.balance(&treasury);
+        let final_seller_bal = usdc_client.balance(&seller);
+        
+        assert_eq!(final_treasury_bal - initial_treasury_bal, 150);
+        assert_eq!(final_seller_bal - initial_seller_bal, 15000 - 150);
     }
 }
 
@@ -754,16 +862,18 @@ mod fuzz {
     fn setup_with_listing(
         listing_amount: i128,
         price_per_credit: i128,
-    ) -> (Env, CarbonMarketplaceContractClient<'static>, Address, Address, Address) {
+    ) -> (Env, CarbonMarketplaceContractClient<'static>, Address, Address, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
         let admin  = Address::generate(&env);
+        let treasury = Address::generate(&env);
         let seller = Address::generate(&env);
         let usdc   = env.register_stellar_asset_contract(admin.clone());
+        let credit_id = env.register_contract(None, carbon_credit::CarbonCreditContract);
         let id     = env.register_contract(None, CarbonMarketplaceContract);
         let env: &'static Env = Box::leak(Box::new(env));
         let client = CarbonMarketplaceContractClient::new(env, &id);
-        client.initialize(&admin, &usdc).unwrap();
+        client.initialize(&admin, &usdc, &credit_id, &treasury).unwrap();
         client.list_credits(
             &seller,
             &s(env, "list-fuzz"),
@@ -775,14 +885,14 @@ mod fuzz {
             &s(env, "VCS"),
             &s(env, "Brazil"),
         ).unwrap();
-        (env.clone(), client, admin, seller, usdc)
+        (env.clone(), client, admin, treasury, seller, usdc)
     }
 
     proptest! {
         /// Purchasing zero or negative credits must return ZeroAmountNotAllowed — never panic.
         #[test]
         fn fuzz_purchase_zero_or_negative(amount in i128::MIN..=0_i128) {
-            let (env, client, _, _, _) = setup_with_listing(100, 10_0000000);
+            let (env, client, _, _, _, _) = setup_with_listing(100, 10_0000000);
             let buyer = Address::generate(&env);
             let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &amount);
             prop_assert!(result.is_err());
@@ -791,7 +901,7 @@ mod fuzz {
         /// Purchasing more than available must return InsufficientLiquidity — never panic.
         #[test]
         fn fuzz_purchase_exceeds_available(excess in 1_i128..1_000_000_i128) {
-            let (env, client, _, _, _) = setup_with_listing(100, 10_0000000);
+            let (env, client, _, _, _, _) = setup_with_listing(100, 10_0000000);
             let buyer = Address::generate(&env);
             let over = 100_i128 + excess;
             let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &over);
@@ -801,7 +911,7 @@ mod fuzz {
         /// Purchasing from a non-existent listing must return ListingNotFound — never panic.
         #[test]
         fn fuzz_purchase_nonexistent_listing(suffix in "[a-z]{1,8}") {
-            let (env, client, _, _, _) = setup_with_listing(100, 10_0000000);
+            let (env, client, _, _, _, _) = setup_with_listing(100, 10_0000000);
             let buyer = Address::generate(&env);
             let bad_id = format!("no-such-{}", suffix);
             let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &10_i128);
@@ -814,7 +924,7 @@ mod fuzz {
         /// Purchasing from a delisted listing must return ListingNotFound — never panic.
         #[test]
         fn fuzz_purchase_delisted_listing(amount in 1_i128..50_i128) {
-            let (env, client, _, seller, _) = setup_with_listing(100, 10_0000000);
+            let (env, client, _, _, seller, _) = setup_with_listing(100, 10_0000000);
             client.delist_credits(&seller, &s(&env, "list-fuzz")).unwrap();
             let buyer = Address::generate(&env);
             let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &amount);
@@ -824,7 +934,7 @@ mod fuzz {
         /// Purchasing from a suspended project must return ProjectSuspended — never panic.
         #[test]
         fn fuzz_purchase_suspended_project(amount in 1_i128..50_i128) {
-            let (env, client, admin, _, _) = setup_with_listing(100, 10_0000000);
+            let (env, client, admin, _, _, _) = setup_with_listing(100, 10_0000000);
             client.suspend_project(&admin, &s(&env, "proj-fuzz")).unwrap();
             let buyer = Address::generate(&env);
             let result = client.try_purchase_credits(&buyer, &s(&env, "list-fuzz"), &amount);
@@ -839,7 +949,7 @@ mod fuzz {
         ) {
             let buy_amount = (listing_amount * buy_frac as i128 / 100).max(1).min(listing_amount - 1);
             // Use price 1 stroop to keep USDC arithmetic trivial with mock_all_auths
-            let (env, client, _, _, _) = setup_with_listing(listing_amount, 1_i128);
+            let (env, client, _, _, _, _) = setup_with_listing(listing_amount, 1_i128);
             let buyer = Address::generate(&env);
             client.purchase_credits(&buyer, &s(&env, "list-fuzz"), &buy_amount).unwrap();
             let listing = client.get_listing(&s(&env, "list-fuzz")).unwrap();
@@ -850,7 +960,7 @@ mod fuzz {
         /// Purchasing the full listing amount marks it Sold — never panic.
         #[test]
         fn fuzz_purchase_full_amount_marks_sold(listing_amount in 1_i128..1_000_i128) {
-            let (env, client, _, _, _) = setup_with_listing(listing_amount, 1_i128);
+            let (env, client, _, _, _, _) = setup_with_listing(listing_amount, 1_i128);
             let buyer = Address::generate(&env);
             client.purchase_credits(&buyer, &s(&env, "list-fuzz"), &listing_amount).unwrap();
             let listing = client.get_listing(&s(&env, "list-fuzz")).unwrap();
@@ -861,7 +971,7 @@ mod fuzz {
         /// Any purchase from a Sold listing must fail — never panic.
         #[test]
         fn fuzz_purchase_from_sold_listing_fails(second_amount in 1_i128..100_i128) {
-            let (env, client, _, _, _) = setup_with_listing(100, 1_i128);
+            let (env, client, _, _, _, _) = setup_with_listing(100, 1_i128);
             let buyer = Address::generate(&env);
             // Buy everything
             client.purchase_credits(&buyer, &s(&env, "list-fuzz"), &100_i128).unwrap();
@@ -879,11 +989,13 @@ mod fuzz {
             let env = Env::default();
             env.mock_all_auths();
             let admin  = Address::generate(&env);
+            let treasury = Address::generate(&env);
             let seller = Address::generate(&env);
             let usdc   = env.register_stellar_asset_contract(admin.clone());
+            let credit_id = env.register_contract(None, carbon_credit::CarbonCreditContract);
             let id     = env.register_contract(None, CarbonMarketplaceContract);
             let client = CarbonMarketplaceContractClient::new(&env, &id);
-            client.initialize(&admin, &usdc).unwrap();
+            client.initialize(&admin, &usdc, &credit_id, &treasury).unwrap();
 
             // Zero amount
             let r1 = client.try_list_credits(

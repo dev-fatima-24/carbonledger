@@ -1,6 +1,6 @@
-stellar-sdk==10.0.0
-requests==2.32.4
+stellar-sdk==13.2.1
+requests==2.33.1
 psycopg2-binary==2.9.9
-python-dotenv==1.0.1
-schedule==1.2.1
+python-dotenv==1.2.2
+schedule==1.2.2
 flask==3.1.3
