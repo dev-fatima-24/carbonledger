@@ -162,8 +162,7 @@ pub struct CarbonCreditContract;
 #[contractimpl]
 impl CarbonCreditContract {
 
-    /// Initialise with admin address.
-    /// Can only be called once — subsequent calls return [`CarbonError::AlreadyInitialized`].
+    /// Initialise with admin address. Can only be called once.
     pub fn initialize(env: Env, admin: Address, registry_contract: Address) -> Result<(), CarbonError> {
         if env.storage().persistent().has(&DataKey::Admin) {
             return Err(CarbonError::AlreadyInitialized);
@@ -183,28 +182,9 @@ impl CarbonCreditContract {
         1970 + (timestamp / seconds_per_year) as u32
     }
 
-    /// Mint verified carbon credits for a verified project. Assigns unique serial
-    /// numbers to each credit, preventing double-counting globally.
+    /// Mint verified carbon credits for a verified project.
+    /// Assigns unique serial numbers, preventing double-counting.
     /// The `initial_owner` receives ownership of the batch.
-    ///
-    /// # Parameters
-    /// - `admin`: The admin address authorizing the minting
-    /// - `project_id`: The project identifier
-    /// - `amount`: Number of credits to mint
-    /// - `vintage_year`: Year the credits were generated
-    /// - `batch_id`: Unique identifier for this credit batch
-    /// - `serial_start`: Starting serial number for the batch
-    /// - `serial_end`: Ending serial number for the batch
-    /// - `metadata_cid`: IPFS CID containing batch metadata
-    ///
-    /// # Errors
-    /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` is zero
-    /// - [`CarbonError::BatchTooLarge`] if `amount` exceeds [`MAX_BATCH_SIZE`] (1,000,000)
-    /// - [`CarbonError::InvalidSerialRange`] if `serial_end < serial_start`
-    /// - [`CarbonError::SerialNumberConflict`] if serial range overlaps existing batch
-    /// - [`CarbonError::InvalidVintageYear`] if vintage year is out of range
-    /// - [`CarbonError::DoubleCountingDetected`] if serial range conflicts globally
-    /// - [`CarbonError::UnauthorizedVerifier`] if caller is not the admin
     pub fn mint_credits(
         env: Env,
         admin: Address,
@@ -222,13 +202,13 @@ impl CarbonCreditContract {
         Self::require_admin(&env, &admin)?;
 
         // Validate string inputs (non-empty and reasonable length)
-        if project_id.is_empty() || project_id.chars().count() > 64 {
+        if project_id.len() == 0 || project_id.len() > 64 {
             return Err(CarbonError::ProjectNotFound);
         }
-        if batch_id.is_empty() || batch_id.chars().count() > 64 {
+        if batch_id.len() == 0 || batch_id.len() > 64 {
             return Err(CarbonError::ProjectNotFound);
         }
-        if metadata_cid.is_empty() || metadata_cid.chars().count() > 128 {
+        if metadata_cid.len() == 0 || metadata_cid.len() > 128 {
             return Err(CarbonError::ProjectNotFound);
         }
 
@@ -316,24 +296,7 @@ impl CarbonCreditContract {
     }
 
     /// Permanently and irreversibly retire carbon credits on-chain.
-    ///
-    /// # Parameters
-    /// - `holder`: The address holding the credits to retire
-    /// - `batch_id`: The credit batch identifier
-    /// - `amount`: Number of credits to retire
-    /// - `retirement_reason`: Reason for retirement (e.g., "Corporate Offset")
-    /// - `beneficiary`: Name of the beneficiary
-    /// - `retirement_id`: Unique identifier for this retirement
-    /// - `tx_hash`: Transaction hash for off-chain verification
-    ///
-    /// # Returns
-    /// The retirement certificate record
-    ///
-    /// # Errors
-    /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` is zero
-    /// - [`CarbonError::InsufficientCredits`] if batch has fewer active credits than requested
-    /// - [`CarbonError::AlreadyRetired`] if batch is fully retired
-    /// - [`CarbonError::ProjectSuspended`] if batch is suspended
+    /// Returns a RetirementCertificate with assigned serial numbers.
     pub fn retire_credits(
         env: Env,
         holder: Address,
@@ -440,17 +403,6 @@ impl CarbonCreditContract {
 
     /// Transfer credits to another account. Only the current batch owner may call this.
     /// No admin bypass exists — ownership is strictly enforced.
-    ///
-    /// # Parameters
-    /// - `from`: The sender's address
-    /// - `to`: The recipient's address
-    /// - `batch_id`: The credit batch identifier
-    /// - `amount`: Number of credits to transfer
-    ///
-    /// # Errors
-    /// - [`CarbonError::UnauthorizedVerifier`] if `from` is not the current batch owner.
-    /// - [`CarbonError::AlreadyRetired`] if batch is fully retired.
-    /// - [`CarbonError::InsufficientCredits`] if insufficient active credits.
     pub fn transfer_credits(
         env: Env,
         from: Address,
@@ -496,30 +448,12 @@ impl CarbonCreditContract {
         Ok(())
     }
 
-    /// Returns a [`CreditBatch`] by ID.
-    ///
-    /// # Parameters
-    /// - `batch_id`: The credit batch identifier
-    ///
-    /// # Returns
-    /// The credit batch record
-    ///
-    /// # Errors
-    /// - [`CarbonError::ProjectNotFound`] if batch does not exist
+    /// Returns a CreditBatch by ID. Errors with ProjectNotFound if missing.
     pub fn get_credit_batch(env: Env, batch_id: String) -> Result<CreditBatch, CarbonError> {
         Self::load_batch(&env, &batch_id)
     }
 
-    /// Returns a permanent [`RetirementCertificate`] by retirement ID.
-    ///
-    /// # Parameters
-    /// - `retirement_id`: The retirement identifier
-    ///
-    /// # Returns
-    /// The retirement certificate record
-    ///
-    /// # Errors
-    /// - [`CarbonError::ProjectNotFound`] if retirement does not exist
+    /// Returns a RetirementCertificate by retirement ID.
     pub fn get_retirement_certificate(
         env: Env,
         retirement_id: String,
@@ -530,26 +464,12 @@ impl CarbonCreditContract {
             .ok_or(CarbonError::ProjectNotFound)
     }
 
-    /// Returns `true` if the serial range `[serial_start, serial_end]` does NOT
-    /// overlap any existing batch — i.e., safe to mint.
-    ///
-    /// # Parameters
-    /// - `serial_start`: Starting serial number
-    /// - `serial_end`: Ending serial number
-    ///
-    /// # Returns
-    /// `true` if the range is available, `false` if it conflicts
+    /// Returns true if serial range [start, end] does not overlap any existing batch.
     pub fn verify_serial_range(env: Env, serial_start: u64, serial_end: u64) -> bool {
         Self::verify_serial_range_internal(&env, serial_start, serial_end)
     }
 
-    /// Returns all [`CreditBatch`] records for a given project.
-    ///
-    /// # Parameters
-    /// - `project_id`: The project identifier
-    ///
-    /// # Returns
-    /// Vector of all credit batches for the project
+    /// Returns all CreditBatch records for a given project.
     pub fn get_project_credits(env: Env, project_id: String) -> Vec<CreditBatch> {
         let batch_ids: Vec<String> = env
             .storage()
@@ -646,24 +566,36 @@ impl CarbonCreditContract {
     }
 }
 
+// ── Invariant tests ───────────────────────────────────────────────────────────
+#[cfg(test)]
+mod invariants;
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env, String};
+    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Env, String};
 
     fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
 
-    /// Creates a fresh env, registers the contract, initialises it and returns
-    /// (client, admin, registry_addr).
     fn setup(env: &Env) -> (CarbonCreditContractClient, Address, Address) {
         env.mock_all_auths();
+        env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+            timestamp: 1735689600, // 2025-01-01
+            protocol_version: 20,
+            sequence_number: 1,
+            network_id: [0; 32],
+            base_reserve: 10,
+            min_temp_entry_ttl: 1,
+            min_persistent_entry_ttl: 1,
+            max_entry_ttl: 518400,
+        });
         let admin = Address::generate(&env);
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let client = CarbonCreditContractClient::new(&env, &id);
-        client.initialize(&admin, &registry).unwrap();
+        client.initialize(&admin, &registry);
         (client, admin, registry)
     }
 
@@ -812,7 +744,7 @@ mod tests {
             &s(&env, "ret-001"),
             &s(&env, "txhash123"),
             &s(&env, "QmCertificateCID"),
-        ).unwrap();
+        );
 
         assert_eq!(cert.amount, 100);
         let batch = client.get_credit_batch(&s(&env, "b1"));
@@ -825,8 +757,8 @@ mod tests {
         let (client, admin, _) = setup(&env);
         let owner = Address::generate(&env);
 
-        client.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner).unwrap();
-        client.retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx"), &s(&env, "QmCID")).unwrap();
+        client.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner);
+        client.retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx"), &s(&env, "QmCID"));
 
         let to = Address::generate(&env);
         let result = client.try_transfer_credits(&owner, &to, &s(&env, "b1"), &10_i128);
@@ -839,8 +771,8 @@ mod tests {
         let (client, admin, _) = setup(&env);
         let owner = Address::generate(&env);
 
-        client.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner).unwrap();
-        client.retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx"), &s(&env, "QmCID")).unwrap();
+        client.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner);
+        client.retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx"), &s(&env, "QmCID"));
 
         let result = client.try_retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-002"), &s(&env, "tx2"), &s(&env, "QmCID2"));
         assert!(result.is_err());
@@ -853,8 +785,8 @@ mod tests {
         let owner = Address::generate(&env);
         mint_batch(&env, &client, &admin, &owner);
 
-        client.retire_credits(&owner, &s(&env, "batch-001"), &500_i128, &s(&env, "partial"), &s(&env, "me"), &s(&env, "ret-001"), &s(&env, "tx")).unwrap();
-        let batch = client.get_credit_batch(&s(&env, "batch-001")).unwrap();
+        client.retire_credits(&owner, &s(&env, "batch-001"), &500_i128, &s(&env, "partial"), &s(&env, "me"), &s(&env, "ret-001"), &s(&env, "tx"), &s(&env, "QmCID"));
+        let batch = client.get_credit_batch(&s(&env, "batch-001"));
         assert_eq!(batch.status, CreditStatus::PartiallyRetired);
     }
 
@@ -878,18 +810,20 @@ mod tests {
         let (client, admin, _) = setup(&env);
         let owner = Address::generate(&env);
         
-        // Set ledger time to 2026-01-01
         env.ledger().set(soroban_sdk::testutils::LedgerInfo {
-            timestamp: 1767225600, // 2026-01-01
+            timestamp: 1767225600,
             protocol_version: 20,
             sequence_number: 1,
             network_id: [0; 32],
             base_reserve: 10,
+            min_temp_entry_ttl: 1,
+            min_persistent_entry_ttl: 1,
+            max_entry_ttl: 518400,
         });
 
         client.mint_credits(
             &admin, &s(&env, "p1"), &100_i128, &1990_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner
-        ).unwrap();
+        );
     }
 
     #[test]
@@ -898,19 +832,20 @@ mod tests {
         let (client, admin, _) = setup(&env);
         let owner = Address::generate(&env);
         
-        // Set ledger time to 2026-01-01
         env.ledger().set(soroban_sdk::testutils::LedgerInfo {
-            timestamp: 1767225600, // 2026-01-01
+            timestamp: 1767225600,
             protocol_version: 20,
             sequence_number: 1,
             network_id: [0; 32],
             base_reserve: 10,
+            min_temp_entry_ttl: 1,
+            min_persistent_entry_ttl: 1,
+            max_entry_ttl: 518400,
         });
 
-        // Current year 2026, so 2027 should succeed
         client.mint_credits(
             &admin, &s(&env, "p1"), &100_i128, &2027_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner
-        ).unwrap();
+        );
     }
 
     #[test]
@@ -919,16 +854,17 @@ mod tests {
         let (client, admin, _) = setup(&env);
         let owner = Address::generate(&env);
         
-        // Set ledger time to 2026-01-01
         env.ledger().set(soroban_sdk::testutils::LedgerInfo {
-            timestamp: 1767225600, // 2026-01-01
+            timestamp: 1767225600,
             protocol_version: 20,
             sequence_number: 1,
             network_id: [0; 32],
             base_reserve: 10,
+            min_temp_entry_ttl: 1,
+            min_persistent_entry_ttl: 1,
+            max_entry_ttl: 518400,
         });
 
-        // Current year 2026, so 2028 should fail
         let result = client.try_mint_credits(
             &admin, &s(&env, "p1"), &100_i128, &2028_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner
         );

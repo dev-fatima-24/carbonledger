@@ -85,7 +85,6 @@ pub struct CarbonProject {
     pub status:                ProjectStatus,
     pub vintage_year:          u32,
     pub created_at:            u64,
-    pub methodology_score:     u32,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -148,7 +147,6 @@ impl CarbonRegistryContract {
         methodology: String,
         country: String,
         project_type: String,
-        methodology_score: u32,
         vintage_year: u32,
         methodology_score: u32,
     ) -> Result<(), CarbonError> {
@@ -156,22 +154,22 @@ impl CarbonRegistryContract {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
-        if project_id.is_empty() || project_id.chars().count() > 64 {
-            return Err(CarbonError::ProjectNotFound); // Reusing an error for simplicity; consider adding new errors
-        }
-        if name.is_empty() || name.chars().count() > 128 {
+        if project_id.len() == 0 || project_id.len() > 64 {
             return Err(CarbonError::ProjectNotFound);
         }
-        if metadata_cid.is_empty() || metadata_cid.chars().count() > 128 {
+        if name.len() == 0 || name.len() > 128 {
             return Err(CarbonError::ProjectNotFound);
         }
-        if methodology.is_empty() || methodology.chars().count() > 64 {
+        if metadata_cid.len() == 0 || metadata_cid.len() > 128 {
             return Err(CarbonError::ProjectNotFound);
         }
-        if country.is_empty() || country.chars().count() > 64 {
+        if methodology.len() == 0 || methodology.len() > 64 {
             return Err(CarbonError::ProjectNotFound);
         }
-        if project_type.is_empty() || project_type.chars().count() > 64 {
+        if country.len() == 0 || country.len() > 64 {
+            return Err(CarbonError::ProjectNotFound);
+        }
+        if project_type.len() == 0 || project_type.len() > 64 {
             return Err(CarbonError::ProjectNotFound);
         }
 
@@ -181,14 +179,7 @@ impl CarbonRegistryContract {
         }
 
         if methodology_score < 70 {
-            return Err(CarbonError::InvalidVintageYear);
-        }
-        if methodology_score < 70 {
             return Err(CarbonError::MethodologyScoreLow);
-        }
-
-        if env.storage().persistent().has(&DataKey::Project(project_id.clone())) {
-            return Err(CarbonError::ProjectAlreadyExists);
         }
 
         if env.storage().persistent().has(&DataKey::Project(project_id.clone())) {
@@ -210,7 +201,6 @@ impl CarbonRegistryContract {
             status:                ProjectStatus::Pending,
             vintage_year,
             created_at:            env.ledger().timestamp(),
-            methodology_score,
         };
         env.storage().persistent().set(&DataKey::Project(project_id.clone()), &project);
 
@@ -385,7 +375,7 @@ impl CarbonRegistryContract {
         oracle_address.require_auth();
         Self::require_oracle(&env, &oracle_address)?;
         let mut project = Self::load_project(&env, &project_id)?;
-        project.total_credits_issued = project.total_credits_issued.checked_add(amount).ok_or(CarbonError::Arithmetic)?;
+        project.total_credits_issued = project.total_credits_issued.checked_add(amount).ok_or(CarbonError::InvalidSerialRange)?;
         env.storage().persistent().set(&DataKey::Project(project_id), &project);
         Ok(())
     }
@@ -402,7 +392,8 @@ impl CarbonRegistryContract {
             .unwrap_or_else(|| vec![&env]);
 
         if !verifiers.contains(&verifier) {
-            let new_verifiers = verifiers.push_back(verifier);
+            let mut new_verifiers = verifiers;
+            new_verifiers.push_back(verifier);
             env.storage().persistent().set(&DataKey::Verifiers, &new_verifiers);
         }
 
@@ -421,7 +412,8 @@ impl CarbonRegistryContract {
             .unwrap_or_else(|| vec![&env]);
 
         if let Some(index) = verifiers.first_index_of(&verifier) {
-            let new_verifiers = verifiers.remove(index);
+            let mut new_verifiers = verifiers;
+            new_verifiers.remove(index);
             env.storage().persistent().set(&DataKey::Verifiers, &new_verifiers);
         }
 
@@ -510,6 +502,16 @@ mod tests {
     fn setup() -> (Env, Address, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
+        env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+            timestamp: 1735689600, // 2025-01-01
+            protocol_version: 20,
+            sequence_number: 1,
+            network_id: [0; 32],
+            base_reserve: 10,
+            min_temp_entry_ttl: 1,
+            min_persistent_entry_ttl: 1,
+            max_entry_ttl: 518400,
+        });
         let admin    = Address::generate(&env);
         let oracle   = Address::generate(&env);
         let verifier = Address::generate(&env);
@@ -533,6 +535,7 @@ mod tests {
             &make_str(env, "Brazil"),
             &make_str(env, "forestry"),
             &2023_u32,
+            &80_u32,
         );
     }
 
@@ -656,7 +659,7 @@ mod tests {
         let (env, admin, oracle, verifier) = setup();
         let contract_id = env.register_contract(None, CarbonRegistryContract);
         let client = CarbonRegistryContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]).unwrap();
+        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]);
 
         let result = client.try_register_project(
             &admin,
@@ -678,7 +681,7 @@ mod tests {
         let (env, admin, oracle, verifier) = setup();
         let contract_id = env.register_contract(None, CarbonRegistryContract);
         let client = CarbonRegistryContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]).unwrap();
+        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]);
 
         client.register_project(
             &admin,
@@ -691,9 +694,9 @@ mod tests {
             &make_str(&env, "forestry"),
             &2023_u32,
             &70_u32,
-        ).unwrap();
+        );
 
-        let p = client.get_project(&make_str(&env, "proj-min")).unwrap();
+        let p = client.get_project(&make_str(&env, "proj-min"));
         assert_eq!(p.methodology_score, 70);
     }
 
@@ -722,7 +725,7 @@ mod tests {
         client.increment_issued(&oracle, &make_str(&env, "proj-001"), &10_i128);
         
         let result = client.try_increment_issued(&oracle, &make_str(&env, "proj-001"), &i128::MAX);
-        assert_eq!(result.unwrap_err().unwrap(), CarbonError::Arithmetic);
+        assert_eq!(result.unwrap_err().unwrap(), CarbonError::InvalidSerialRange);
     }
 }
 
