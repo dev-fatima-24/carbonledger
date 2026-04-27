@@ -2,12 +2,20 @@ import { Injectable, NotFoundException, BadRequestException } from "@nestjs/comm
 import { PrismaService } from "../prisma.service";
 import { CreateListingDto, PurchaseDto, BulkPurchaseDto, ListingsQueryDto, PaginatedListingsResponse } from "./marketplace.dto";
 import { randomBytes } from "crypto";
+import { ListingsCacheService } from "./listings-cache.service";
 
 @Injectable()
 export class MarketplaceService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: ListingsCacheService,
+  ) {}
 
   async findAll(query: ListingsQueryDto): Promise<PaginatedListingsResponse> {
+    const cacheKey = JSON.stringify(query);
+    const cached = await this.cache.get<PaginatedListingsResponse>(cacheKey);
+    if (cached) return cached;
+
     const { methodology, vintage, country, minPrice, maxPrice, cursor, limit = 20 } = query;
 
     const where: any = {
@@ -37,7 +45,9 @@ export class MarketplaceService {
     const next_cursor = hasMore ? listings[listings.length - 2].id : undefined;
     if (hasMore) listings.pop();
 
-    return { listings, next_cursor, total_count };
+    const result = { listings, next_cursor, total_count };
+    await this.cache.set(cacheKey, result);
+    return result;
   }
 
   async findOne(listingId: string) {
@@ -48,7 +58,7 @@ export class MarketplaceService {
 
   async createListing(dto: CreateListingDto & { seller: string }) {
     // Fix mass assignment (API3): explicitly pick only allowed fields — never trust the full DTO object
-    return this.prisma.marketListing.create({
+    const result = await this.prisma.marketListing.create({
       data: {
         listingId:       dto.listingId,
         projectId:       dto.projectId,
@@ -62,14 +72,18 @@ export class MarketplaceService {
         status:          "Active",            // status is never accepted from the client
       },
     });
+    await this.cache.invalidateAll();
+    return result;
   }
 
   async delistListing(listingId: string) {
     await this.findOne(listingId);
-    return this.prisma.marketListing.update({
+    const result = await this.prisma.marketListing.update({
       where: { listingId },
       data:  { status: "Delisted" },
     });
+    await this.cache.invalidateAll();
+    return result;
   }
 
   async purchase(dto: PurchaseDto) {
