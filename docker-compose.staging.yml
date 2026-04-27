@@ -24,10 +24,11 @@ services:
       CARBON_MARKETPLACE_CONTRACT_ID:  ${STAGING_MARKETPLACE_CONTRACT_ID}
       CARBON_ORACLE_CONTRACT_ID:       ${STAGING_ORACLE_CONTRACT_ID}
       USDC_CONTRACT_ID:                ${STAGING_USDC_CONTRACT_ID}
-      REDIS_HOST:                      redis
-      REDIS_PORT:                      6379
+      REDIS_SENTINELS:                 redis-sentinel:26379
+      REDIS_SENTINEL_NAME:             mymaster
       REDIS_PASSWORD:                  ${REDIS_PASSWORD:-}
       FRONTEND_URL:                    ${STAGING_URL}
+      ALLOWED_ORIGINS:                 ${ALLOWED_ORIGINS:-https://staging.carbonledger.com}
       PORT:                            3001
 
   frontend:

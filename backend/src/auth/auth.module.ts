@@ -5,6 +5,7 @@ import { AuthService } from "./auth.service";
 import { AuthController } from "./auth.controller";
 import { JwtStrategy } from "./jwt.strategy";
 import { PrismaService } from "../prisma.service";
+import { LoginRateLimitGuard } from "./login-rate-limit.guard";
 
 @Module({
   imports: [
@@ -14,7 +15,7 @@ import { PrismaService } from "../prisma.service";
       signOptions: { expiresIn: process.env.JWT_EXPIRY || "7d" },
     }),
   ],
-  providers: [AuthService, JwtStrategy, PrismaService],
+  providers: [AuthService, JwtStrategy, PrismaService, LoginRateLimitGuard],
   controllers: [AuthController],
   exports: [AuthService, JwtModule],
 })

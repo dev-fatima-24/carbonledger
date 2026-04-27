@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from "@nestjs/common";
+import { Injectable, UnauthorizedException, ServiceUnavailableException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { PrismaService } from "../prisma.service";
 
@@ -11,16 +11,25 @@ export class AuthService {
     private readonly prisma: PrismaService,
   ) {}
 
-  async loginWithPublicKey(publicKey: string, role: UserRole = "corporation"): Promise<{ access_token: string }> {
-    // Upsert user
-    await this.prisma.user.upsert({
-      where:  { publicKey },
-      update: {},
-      create: { publicKey, role },
-    });
+  async loginWithPublicKey(publicKey: string): Promise<{ access_token: string }> {
+    // Role is NEVER accepted from the request body.
+    // New users always start as "corporation"; existing users keep their DB role.
+    try {
+      const user = await this.prisma.user.upsert({
+        where:  { publicKey },
+        update: {},
+        create: { publicKey, role: "corporation" },
+      });
 
-    const payload = { sub: publicKey, role };
-    return { access_token: this.jwt.sign(payload) };
+      const payload = { sub: publicKey, role: user.role };
+      return { access_token: this.jwt.sign(payload) };
+    } catch (error) {
+      // P2024: pool timeout — return 503 instead of crashing the connection
+      if (error?.code === "P2024") {
+        throw new ServiceUnavailableException("Service temporarily unavailable — please retry");
+      }
+      throw error;
+    }
   }
 
   async validateUser(publicKey: string): Promise<{ publicKey: string; role: string } | null> {

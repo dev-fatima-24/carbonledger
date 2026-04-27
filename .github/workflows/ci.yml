@@ -5,6 +5,9 @@ on:
     branches: [main, develop]
   push:
     branches: [main]
+  schedule:
+    # Run fuzz suite every Sunday at 02:00 UTC
+    - cron: "0 2 * * 0"
 
 jobs:
   lint-dockerfiles:
@@ -127,25 +130,27 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: carbonledger/frontend/package-lock.json
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        working-directory: carbonledger/frontend
+        working-directory: frontend
         run: npm ci
 
-      - name: Type check
-        working-directory: carbonledger/frontend
-        run: npx tsc --noEmit || true
+      - name: Lint (zero warnings)
+        working-directory: frontend
+        run: npx next lint --max-warnings 0
 
-      - name: Run frontend tests
-        working-directory: carbonledger/frontend
-        run: npm test
+      - name: Type check
+        working-directory: frontend
+        run: npx tsc --noEmit
 
       - name: Build
-        working-directory: carbonledger/frontend
+        working-directory: frontend
         env:
           NEXT_PUBLIC_API_URL: http://localhost:3001/api/v1
           NEXT_PUBLIC_STELLAR_NETWORK: testnet
+          NEXT_PUBLIC_HORIZON_URL: https://horizon-testnet.stellar.org
+          NEXT_PUBLIC_SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
         run: npm run build
 
   e2e:
@@ -257,3 +262,37 @@ jobs:
           python3 -m py_compile verification_listener.py
           python3 -m py_compile price_oracle.py
           python3 -m py_compile satellite_monitor.py
+
+  fuzz:
+    name: Property-Based Fuzz Tests
+    runs-on: ubuntu-latest
+    # Run on schedule (weekly) or when manually triggered; skip on normal PRs/pushes
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            carbonledger/contracts/target
+          key: ${{ runner.os }}-cargo-fuzz-${{ hashFiles('carbonledger/contracts/**/Cargo.lock') }}
+
+      - name: Run fuzz tests (carbon_credit)
+        working-directory: carbonledger/contracts
+        env:
+          PROPTEST_CASES: 1000
+        run: cargo test -p carbon_credit fuzz:: -- --nocapture
+
+      - name: Run fuzz tests (carbon_marketplace)
+        working-directory: carbonledger/contracts
+        env:
+          PROPTEST_CASES: 1000
+        run: cargo test -p carbon_marketplace fuzz:: -- --nocapture

@@ -11,15 +11,30 @@ export class ProjectsService {
     private readonly mailService: MailService,
   ) {}
 
-  async findAll(filters: { methodology?: string; country?: string; vintage?: number }) {
-    return this.prisma.carbonProject.findMany({
-      where: {
-        ...(filters.methodology && { methodology: filters.methodology }),
-        ...(filters.country     && { country: filters.country }),
-        ...(filters.vintage     && { vintageYear: filters.vintage }),
-      },
-      orderBy: { createdAt: "desc" },
-    });
+  async findAll(filters: { methodology?: string; country?: string; vintage?: number; cursor?: string; limit?: number }) {
+    const take = Math.min(Math.max(filters.limit ?? 20, 1), 100);
+    const where: any = {
+      ...(filters.methodology && { methodology: filters.methodology }),
+      ...(filters.country     && { country: filters.country }),
+      ...(filters.vintage     && { vintageYear: filters.vintage }),
+    };
+
+    const [projects, total_count] = await Promise.all([
+      this.prisma.carbonProject.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        take: take + 1,
+        cursor: filters.cursor ? { id: filters.cursor } : undefined,
+        skip: filters.cursor ? 1 : 0,
+      }),
+      this.prisma.carbonProject.count({ where }),
+    ]);
+
+    const hasMore = projects.length > take;
+    const next_cursor = hasMore ? projects[projects.length - 2].id : undefined;
+    if (hasMore) projects.pop();
+
+    return { projects, next_cursor, total_count };
   }
 
   async searchProjects(searchDto: SearchProjectsDto): Promise<PaginatedProjectsResponse> {

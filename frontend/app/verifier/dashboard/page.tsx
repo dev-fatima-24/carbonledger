@@ -1,5 +1,6 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import OracleStatus from "../../../components/OracleStatus";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api/v1";
 
@@ -14,12 +15,18 @@ interface Project {
   createdAt: string;
 }
 
+interface PendingAction {
+  project: Project;
+  decision: "verify" | "reject";
+}
+
 export default function VerifierDashboardPage() {
   const [publicKey, setPublicKey] = useState("");
   const [token, setToken] = useState("");
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [pending, setPending] = useState<PendingAction | null>(null);
 
   async function load() {
     if (!publicKey || !token) return;
@@ -38,9 +45,11 @@ export default function VerifierDashboardPage() {
     }
   }
 
-  async function reviewProject(projectId: string, decision: "verify" | "reject") {
-    const endpoint = `${API}/projects/${projectId}/${decision}`;
-    await fetch(endpoint, {
+  async function confirmReview() {
+    if (!pending) return;
+    const { project, decision } = pending;
+    setPending(null);
+    await fetch(`${API}/projects/${project.id}/${decision}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ verifierPublicKey: publicKey }),
@@ -85,18 +94,65 @@ export default function VerifierDashboardPage() {
             <small>{p.methodology} (Score: {p.methodologyScore}) · {p.country} · submitted {new Date(p.createdAt).toLocaleDateString()}</small>
           </div>
           <div style={{ display: "flex", gap: "0.5rem" }}>
-            <button onClick={() => reviewProject(p.id, "verify")} style={approveBtn}>Approve</button>
-            <button onClick={() => reviewProject(p.id, "reject")} style={rejectBtn}>Reject</button>
+            <button onClick={() => setPending({ project: p, decision: "verify" })} style={approveBtn}>Approve</button>
+            <button onClick={() => setPending({ project: p, decision: "reject" })} style={rejectBtn}>Reject</button>
           </div>
         </div>
       ))}
 
       <hr style={{ margin: "2rem 0" }} />
+      <OracleStatus />
+      <hr style={{ margin: "2rem 0" }} />
       <p style={{ fontSize: "0.875rem", color: "#666" }}>
         <strong>Attestation fee:</strong> verifiers earn a fee per approved project as documented in{" "}
         <a href="/docs/verifier-onboarding.md">docs/verifier-onboarding.md</a>.
       </p>
+
+      {pending && (
+        <div style={overlayStyle} role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+          <div style={dialogStyle}>
+            <h2 id="confirm-title" style={{ margin: "0 0 0.5rem", fontSize: "1.125rem" }}>
+              {pending.decision === "verify" ? "✅ Approve Project" : "❌ Reject Project"}
+            </h2>
+            <p style={{ color: "#6b7280", margin: "0 0 1.25rem", fontSize: "0.875rem" }}>
+              This action will be recorded permanently on-chain and cannot be undone.
+            </p>
+
+            <div style={summaryStyle}>
+              <Row label="Project" value={`${pending.project.name} (${pending.project.projectId})`} />
+              <Row label="Methodology" value={pending.project.methodology} />
+              <Row label="Country" value={pending.project.country} />
+              <Row label="Submitted" value={new Date(pending.project.createdAt).toLocaleDateString()} />
+              <Row label="Action" value={pending.decision === "verify" ? "Approve — issue attestation" : "Reject — permanently block issuance"} />
+            </div>
+
+            <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end", marginTop: "1.5rem" }}>
+              <button
+                onClick={() => setPending(null)}
+                style={cancelBtn}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmReview}
+                style={pending.decision === "verify" ? approveBtn : rejectBtn}
+              >
+                {pending.decision === "verify" ? "Confirm Approval" : "Confirm Rejection"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", padding: "0.4rem 0", borderBottom: "1px solid #f3f4f6" }}>
+      <span style={{ fontSize: "0.8rem", color: "#6b7280" }}>{label}</span>
+      <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "#111827", maxWidth: "60%", textAlign: "right" }}>{value}</span>
+    </div>
   );
 }
 
@@ -106,7 +162,23 @@ const btnStyle: React.CSSProperties = {
 };
 const approveBtn: React.CSSProperties = { ...btnStyle, background: "#16a34a" };
 const rejectBtn: React.CSSProperties  = { ...btnStyle, background: "#dc2626" };
-const cardStyle: React.CSSProperties  = {
+const cancelBtn: React.CSSProperties  = {
+  padding: "0.5rem 1rem", background: "#fff", color: "#374151",
+  border: "1px solid #d1d5db", borderRadius: 4, cursor: "pointer",
+};
+const cardStyle: React.CSSProperties = {
   display: "flex", justifyContent: "space-between", alignItems: "center",
   padding: "1rem", border: "1px solid #e5e7eb", borderRadius: 6, marginBottom: "0.75rem",
+};
+const overlayStyle: React.CSSProperties = {
+  position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)",
+  display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50,
+};
+const dialogStyle: React.CSSProperties = {
+  background: "#fff", borderRadius: 8, padding: "1.75rem",
+  width: "100%", maxWidth: 480, boxShadow: "0 20px 25px -5px rgb(0 0 0 / 0.1)",
+};
+const summaryStyle: React.CSSProperties = {
+  background: "#f9fafb", border: "1px solid #e5e7eb",
+  borderRadius: 6, padding: "0.75rem 1rem",
 };
