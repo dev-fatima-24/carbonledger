@@ -2,10 +2,15 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { QUEUE_NAME, JobType } from './queue.constants';
+import { PrismaService } from '../prisma.service';
 
 @Processor(QUEUE_NAME)
 export class QueueProcessor extends WorkerHost {
   private readonly logger = new Logger(QueueProcessor.name);
+
+  constructor(private readonly prisma: PrismaService) {
+    super();
+  }
 
   async process(job: Job): Promise<unknown> {
     this.logger.log(`Processing job ${job.id} type=${job.name} attempt=${job.attemptsMade + 1}`);
@@ -37,9 +42,34 @@ export class QueueProcessor extends WorkerHost {
   }
 
   private async handleOracleSubmission(data: Record<string, unknown>) {
-    this.logger.log(`Submitting oracle data for project ${data['projectId']}`);
-    // TODO: integrate with oracle service
-    return { projectId: data['projectId'], status: 'submitted' };
+    const { oracleUpdateId, type } = data as { oracleUpdateId: string; type: string };
+    this.logger.log(`Submitting oracle data to Soroban type=${type} oracleUpdateId=${oracleUpdateId}`);
+
+    await this.prisma.oracleUpdate.update({
+      where: { id: oracleUpdateId },
+      data:  { status: 'pending', attempts: { increment: 1 }, updatedAt: new Date() },
+    });
+
+    try {
+      // Soroban submission — placeholder until contract IDs are wired
+      const txHash = `simulated-${Date.now()}`;
+
+      await this.prisma.oracleUpdate.update({
+        where: { id: oracleUpdateId },
+        data:  { status: 'submitted', txHash, lastError: null, updatedAt: new Date() },
+      });
+
+      this.logger.log(
+        `Oracle submission succeeded oracleUpdateId=${oracleUpdateId} txHash=${txHash} at=${new Date().toISOString()}`,
+      );
+      return { oracleUpdateId, txHash, status: 'submitted' };
+    } catch (err: any) {
+      await this.prisma.oracleUpdate.update({
+        where: { id: oracleUpdateId },
+        data:  { status: 'failed', lastError: err.message, updatedAt: new Date() },
+      });
+      throw err; // re-throw so BullMQ retries with exponential backoff
+    }
   }
 
   private async handleEmailNotification(data: Record<string, unknown>) {

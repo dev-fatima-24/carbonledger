@@ -13,8 +13,8 @@ function RetirementCertificateClient({ id }: { id: string }) {
   const { data: retirement, isLoading } = useRetirement(id);
 
   if (isLoading) return (
-    <div style={{ textAlign: "center", padding: "4rem", color: colors.neutral[400] }}>
-      Loading certificate…
+    <div style={{ maxWidth: "1000px", margin: "2.5rem auto", padding: "0 2rem" }}>
+       <LoadingSkeleton variant="Certificate" />
     </div>
   );
 
