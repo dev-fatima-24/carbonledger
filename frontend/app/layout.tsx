@@ -1,7 +1,6 @@
 import './globals.css';
 import type { Metadata } from 'next';
-import { WalletProvider } from '@/lib/wallet/WalletContext';
-import Navbar from '@/components/Navbar';
+import { ThemeProvider } from '../lib/theme-context';
 
 export const metadata: Metadata = {
   title: 'Carbon Ledger',
@@ -20,10 +19,9 @@ export default function RootLayout({
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=yes" />
       </head>
       <body>
-        <WalletProvider>
-          <Navbar />
+        <ThemeProvider>
           {children}
-        </WalletProvider>
+        </ThemeProvider>
       </body>
     </html>
   );
