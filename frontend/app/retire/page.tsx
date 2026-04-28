@@ -31,9 +31,12 @@ export default function RetirePage() {
 
   async function handleRetire() {
     if (!walletKey || !batchId || !beneficiary || !reason) return;
-    setTxStatus("pending");
+    setTxStatus("building");
     try {
-      setTxStatus("submitted");
+      await new Promise(r => setTimeout(r, 500));
+      setTxStatus("signing");
+      await new Promise(r => setTimeout(r, 1000));
+      setTxStatus("submitting");
       const result = await retireCredits({
         batchId,
         amount,
@@ -41,6 +44,8 @@ export default function RetirePage() {
         retirementReason: reason,
         holderPublicKey: walletKey,
       });
+      setTxStatus("polling");
+      await new Promise(r => setTimeout(r, 2000));
       setTxHash(result.txHash);
       setRetirementId(result.retirementId);
       setTxStatus("confirmed");
@@ -63,7 +68,8 @@ export default function RetirePage() {
     boxSizing: "border-box",
   };
 
-  const isDisabled = !beneficiary || !reason || txStatus === "submitted" || txStatus === "confirmed";
+  const busy = txStatus && !["confirmed", "failed"].includes(txStatus);
+  const isDisabled = !beneficiary || !reason || !!busy || txStatus === "confirmed";
 
   return (
     <ErrorBoundary>
@@ -134,7 +140,7 @@ export default function RetirePage() {
           </p>
         </div>
 
-        {txStatus && <TransactionStatus status={txStatus} txHash={txHash ?? undefined} />}
+        {txStatus && <TransactionStatus status={txStatus} txHash={txHash ?? undefined} onRetry={txStatus === "failed" ? handleRetire : undefined} />}
 
         {retirementId && txStatus === "confirmed" && (
           <a
@@ -167,9 +173,8 @@ export default function RetirePage() {
               cursor: isDisabled ? "not-allowed" : "pointer",
             }}
           >
-            {txStatus === "pending"   ? "Preparing…"   :
-             txStatus === "submitted" ? "Confirming…"  :
-             txStatus === "confirmed" ? "Retired ✓"    :
+            {txStatus === "confirmed" ? "Retired ✓" :
+             busy ? "Processing…" :
              `Permanently Retire ${formatTonnes(amount)}`}
           </button>
         )}
