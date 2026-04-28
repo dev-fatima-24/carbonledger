@@ -19,10 +19,10 @@ describe('Certificate Retrieval Integration Tests (e2e)', () => {
     await seedTestData(app);
   });
 
-  describe('GET /retirements/certificate/:id', () => {
+  describe('GET /certificates/:id', () => {
     it('should retrieve certificate for retired credit', async () => {
       const response = await request(app.getHttpServer())
-        .get('/retirements/certificate/RET001')
+        .get('/certificates/RET001')
         .expect(200);
 
       expect(response.body).toHaveProperty('retirementId', 'RET001');
@@ -36,7 +36,7 @@ describe('Certificate Retrieval Integration Tests (e2e)', () => {
 
     it('should return 404 for non-existent retirement', async () => {
       const response = await request(app.getHttpServer())
-        .get('/retirements/certificate/NONEXISTENT')
+        .get('/certificates/NONEXISTENT')
         .expect(404);
 
       expect(response.body).toHaveProperty('message');
@@ -45,7 +45,7 @@ describe('Certificate Retrieval Integration Tests (e2e)', () => {
 
     it('should return complete retirement data including project info', async () => {
       const response = await request(app.getHttpServer())
-        .get('/retirements/certificate/RET001')
+        .get('/certificates/RET001')
         .expect(200);
 
       expect(response.body).toHaveProperty('projectId', 'PROJ001');
@@ -154,7 +154,7 @@ describe('Certificate Retrieval Integration Tests (e2e)', () => {
   describe('Certificate Data Integrity', () => {
     it('should include all required fields for certificate generation', async () => {
       const response = await request(app.getHttpServer())
-        .get('/retirements/certificate/RET001')
+        .get('/certificates/RET001')
         .expect(200);
 
       const requiredFields = [
@@ -178,7 +178,7 @@ describe('Certificate Retrieval Integration Tests (e2e)', () => {
 
     it('should return valid serial numbers array', async () => {
       const response = await request(app.getHttpServer())
-        .get('/retirements/certificate/RET001')
+        .get('/certificates/RET001')
         .expect(200);
 
       expect(Array.isArray(response.body.serialNumbers)).toBe(true);
