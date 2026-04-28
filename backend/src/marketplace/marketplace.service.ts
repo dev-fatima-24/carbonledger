@@ -16,7 +16,7 @@ export class MarketplaceService {
     const cached = await this.cache.get<PaginatedListingsResponse>(cacheKey);
     if (cached) return cached;
 
-    const { methodology, vintage, country, minPrice, maxPrice, cursor, limit = 20 } = query;
+    const { methodology, vintage, country, minPrice, maxPrice, search, cursor, limit = 20 } = query;
 
     const where: any = {
       status: { in: ["Active", "PartiallyFilled"] },
@@ -26,6 +26,15 @@ export class MarketplaceService {
       ...(minPrice    && { pricePerCredit: { gte: minPrice } }),
       ...(maxPrice    && { pricePerCredit: { lte: maxPrice } }),
     };
+
+    if (search) {
+      where.OR = [
+        { project: { name: { contains: search, mode: "insensitive" } } },
+        { methodology: { contains: search, mode: "insensitive" } },
+        { country: { contains: search, mode: "insensitive" } },
+        { projectId: { contains: search, mode: "insensitive" } },
+      ];
+    }
 
     const [listings, total_count] = await Promise.all([
       this.prisma.marketListing.findMany({

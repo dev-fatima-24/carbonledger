@@ -9,6 +9,8 @@ import { getWalletErrorMessage } from "../../lib/wallet-errors";
 import { colors } from "../../styles/design-system";
 import TransactionStatus, { TxStatus } from "../../components/TransactionStatus";
 import Toast, { useToast } from "../../components/Toast";
+import { useWalletStatus } from "../../hooks/useWalletStatus";
+import WalletPrompt from "../../components/WalletPrompt";
 
 export default function RetirePage() {
   const searchParams = useSearchParams();
@@ -17,19 +19,14 @@ export default function RetirePage() {
   const [amount, setAmount]         = useState(1);
   const [beneficiary, setBeneficiary] = useState("");
   const [reason, setReason]         = useState("");
-  const [walletKey, setWalletKey]   = useState<string | null>(null);
   const [txStatus, setTxStatus]     = useState<TxStatus | null>(null);
   const [txHash, setTxHash]         = useState<string | null>(null);
   const [retirementId, setRetirementId] = useState<string | null>(null);
   const { toasts, addToast, dismiss } = useToast();
+  const { status: walletStatus, address: walletKey, refresh: refreshWallet } = useWalletStatus();
 
-  async function handleConnect() {
-    try {
-      const key = await connectFreighter();
-      setWalletKey(key);
-    } catch (e) {
-      addToast({ type: "error", title: "Wallet error", message: getWalletErrorMessage(e) });
-    }
+  async function handleConnect(key: string) {
+    addToast({ type: "success", title: "Wallet connected", message: key.slice(0, 8) + "…" });
   }
 
   async function handleRetire() {
@@ -153,18 +150,8 @@ export default function RetirePage() {
           </a>
         )}
 
-        {!walletKey ? (
-          <button
-            type="button"
-            onClick={handleConnect}
-            style={{
-              background: colors.primary[600], color: "#fff",
-              border: "none", borderRadius: "0.5rem",
-              padding: "0.875rem", fontSize: "1rem", fontWeight: 700, cursor: "pointer",
-            }}
-          >
-            Connect Wallet
-          </button>
+        {walletStatus !== "ready" ? (
+          <WalletPrompt status={walletStatus} onConnect={handleConnect} refresh={refreshWallet} />
         ) : (
           <button
             type="button"

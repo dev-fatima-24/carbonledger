@@ -9,11 +9,12 @@ import { colors } from "../../styles/design-system";
 import MarketplaceFilter, { FilterState } from "../../components/MarketplaceFilter";
 import LoadingSkeleton from "../../components/LoadingSkeleton";
 import Toast, { useToast } from "../../components/Toast";
+import Highlight from "../../components/Highlight";
 
 export default function MarketplacePage() {
   const searchParams = useSearchParams();
   const [filters, setFilters] = useState<FilterState>({
-    methodology: "", vintageYear: "", country: "", minPrice: "", maxPrice: "",
+    methodology: "", vintageYear: "", country: "", minPrice: "", maxPrice: "", projectType: "", search: "",
   });
 
   useEffect(() => {
@@ -28,6 +29,7 @@ export default function MarketplacePage() {
     minPrice:     filters.minPrice     || undefined,
     maxPrice:     filters.maxPrice     || undefined,
     projectType:  filters.projectType  || undefined,
+    search:       filters.search       || undefined,
   });
 
   const { addItem, items } = useCartStore();
@@ -72,9 +74,37 @@ export default function MarketplacePage() {
       {isLoading ? (
         <LoadingSkeleton rows={6} />
       ) : !listings?.length ? (
-        <p style={{ color: colors.neutral[400], textAlign: "center", padding: "3rem 0" }}>
-          No listings match your filters.
-        </p>
+        <div style={{ textAlign: "center", padding: "4rem 2rem", background: colors.surfaceAlt, borderRadius: "1rem", marginTop: "1.5rem" }}>
+          <div style={{ fontSize: "3rem", marginBottom: "1rem" }}>🔍</div>
+          <p style={{ color: colors.neutral[900], fontWeight: 700, fontSize: "1.25rem", margin: "0 0 0.5rem" }}>
+            No credits found for "{filters.search || "your filters"}"
+          </p>
+          <p style={{ color: colors.neutral[500], fontSize: "0.875rem", marginBottom: "2rem" }}>
+            Try adjusting your search or explore these popular categories:
+          </p>
+          <div style={{ display: "flex", gap: "0.75rem", justifyContent: "center", flexWrap: "wrap" }}>
+            {["REDD+", "Brazil", "VCS", "2024 Vintage", "Nature-based"].map(suggestion => (
+              <button
+                key={suggestion}
+                onClick={() => {
+                  const s = suggestion.includes("Vintage") ? suggestion.split(" ")[0] : suggestion;
+                  const key = suggestion.includes("Vintage") ? "vintageYear" : suggestion === "REDD+" ? "projectType" : suggestion === "Brazil" ? "country" : "methodology";
+                  setFilters({ ...filters, [key]: s, search: "" });
+                }}
+                style={{
+                  padding: "0.5rem 1rem", border: `1px solid ${colors.neutral[200]}`,
+                  borderRadius: "2rem", background: colors.surface,
+                  fontSize: "0.8rem", fontWeight: 600, color: colors.primary[700],
+                  cursor: "pointer", transition: "all 0.2s",
+                }}
+                onMouseOver={e => { e.currentTarget.style.borderColor = colors.primary[400]; e.currentTarget.style.background = colors.primary[50]; }}
+                onMouseOut={e => { e.currentTarget.style.borderColor = colors.neutral[200]; e.currentTarget.style.background = colors.surface; }}
+              >
+                {suggestion}
+              </button>
+            ))}
+          </div>
+        </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginTop: "1.5rem" }}>
           {listings.map(listing => {
@@ -93,10 +123,10 @@ export default function MarketplacePage() {
                 {/* Project info */}
                 <div>
                   <p style={{ fontWeight: 700, fontSize: "0.95rem", color: colors.neutral[900], margin: "0 0 0.2rem" }}>
-                    {listing.projectName || listing.projectId}
+                    <Highlight text={listing.projectName || listing.projectId} query={filters.search} />
                   </p>
                   <p style={{ fontSize: "0.75rem", color: colors.neutral[500], margin: 0 }}>
-                    {listing.country} · {listing.methodology} · {listing.vintageYear} Vintage · {formatTonnes(listing.amountAvailable)} available
+                    <Highlight text={listing.country} query={filters.search} /> · <Highlight text={listing.methodology} query={filters.search} /> · {listing.vintageYear} Vintage · {formatTonnes(listing.amountAvailable)} available
                   </p>
                 </div>
 

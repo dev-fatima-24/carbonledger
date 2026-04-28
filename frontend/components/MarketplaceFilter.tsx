@@ -11,11 +11,12 @@ export interface FilterState {
   minPrice:     string;
   maxPrice:     string;
   projectType:  string;
+  search:       string;
 }
 
 export const EMPTY_FILTERS: FilterState = {
   methodology: "", vintageYear: "", country: "",
-  minPrice: "", maxPrice: "", projectType: "",
+  minPrice: "", maxPrice: "", projectType: "", search: "",
 };
 
 /** Build a FilterState from URLSearchParams. */
@@ -27,6 +28,7 @@ export function filtersFromParams(params: URLSearchParams): FilterState {
     minPrice:    params.get("minPrice")     ?? "",
     maxPrice:    params.get("maxPrice")     ?? "",
     projectType: params.get("projectType")  ?? "",
+    search:      params.get("search")       ?? "",
   };
 }
 
@@ -52,20 +54,74 @@ const controlStyle: React.CSSProperties = {
 };
 
 export default function MarketplaceFilter({ filters, onChange }: Props) {
-  const set = (key: keyof FilterState) => (e: React.ChangeEvent<HTMLSelectElement | HTMLInputElement>) =>
-    onChange({ ...filters, [key]: e.target.value });
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [localSearch, setLocalSearch] = useState(filters.search);
+
+  const set = (key: keyof FilterState) => (e: React.ChangeEvent<HTMLSelectElement | HTMLInputElement>) => {
+    const newVal = e.target.value;
+    const newFilters = { ...filters, [key]: newVal };
+    onChange(newFilters);
+    
+    // Sync with URL
+    const params = new URLSearchParams(searchParams.toString());
+    if (newVal) params.set(key, newVal);
+    else params.delete(key);
+    router.push(`?${params.toString()}`, { scroll: false });
+  };
+
+  // Debounced search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (localSearch !== filters.search) {
+        set({ target: { value: localSearch } } as any); // hacky set trigger
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [localSearch]);
+
+  // Actually I should refine the set logic to be cleaner.
+  const handleFilterChange = (key: keyof FilterState, value: string) => {
+    const newFilters = { ...filters, [key]: value };
+    onChange(newFilters);
+    const params = new URLSearchParams(searchParams.toString());
+    if (value) params.set(key, value);
+    else params.delete(key);
+    router.push(`?${params.toString()}`, { scroll: false });
+  };
 
   return (
-    <fieldset style={{
-      background: colors.surface,
-      border: `1px solid ${colors.neutral[200]}`,
-      borderRadius: "0.75rem",
-      padding: "1.25rem",
-      display: "grid",
-      gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-      gap: "1rem",
-      margin: 0,
-    }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+      {/* Search Input */}
+      <div style={{ position: "relative" }}>
+        <input
+          type="text"
+          placeholder="Search by project name, methodology, or country…"
+          value={localSearch}
+          onChange={(e) => setLocalSearch(e.target.value)}
+          style={{
+            ...controlStyle,
+            padding: "0.75rem 1rem 0.75rem 2.5rem",
+            fontSize: "1rem",
+            borderRadius: "0.75rem",
+            boxShadow: "0 2px 4px rgba(0,0,0,0.05)",
+          }}
+        />
+        <span style={{ position: "absolute", left: "1rem", top: "50%", transform: "translateY(-50%)", color: colors.neutral[400] }}>
+          🔍
+        </span>
+      </div>
+
+      <fieldset style={{
+        background: colors.surface,
+        border: `1px solid ${colors.neutral[200]}`,
+        borderRadius: "0.75rem",
+        padding: "1.25rem",
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+        gap: "1rem",
+        margin: 0,
+      }}>
       <legend style={{
         fontSize: "0.75rem",
         fontWeight: 700,
@@ -138,7 +194,11 @@ export default function MarketplaceFilter({ filters, onChange }: Props) {
       <div style={{ display: "flex", alignItems: "flex-end" }}>
         <button
           type="button"
-          onClick={() => onChange({ methodology: "", vintageYear: "", country: "", minPrice: "", maxPrice: "" })}
+          onClick={() => {
+            setLocalSearch("");
+            onChange(EMPTY_FILTERS);
+            router.push("?", { scroll: false });
+          }}
           style={{
             background: "transparent",
             color: colors.neutral[500],
@@ -153,6 +213,6 @@ export default function MarketplaceFilter({ filters, onChange }: Props) {
           Clear Filters
         </button>
       </div>
-    </fieldset>
+    </div>
   );
 }

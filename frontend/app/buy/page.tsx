@@ -9,6 +9,8 @@ import { getWalletErrorMessage } from "../../lib/wallet-errors";
 import { colors } from "../../styles/design-system";
 import TransactionStatus, { TxStatus } from "../../components/TransactionStatus";
 import Toast, { useToast } from "../../components/Toast";
+import { useWalletStatus } from "../../hooks/useWalletStatus";
+import WalletPrompt from "../../components/WalletPrompt";
 
 export default function BuyPage() {
   const searchParams = useSearchParams();
@@ -16,24 +18,18 @@ export default function BuyPage() {
 
   const { data: listing } = useListing(listingId);
   const [amount, setAmount]     = useState(1);
-  const [walletKey, setWalletKey] = useState<string | null>(null);
   const [txStatus, setTxStatus] = useState<TxStatus | null>(null);
   const [txHash, setTxHash]     = useState<string | null>(null);
   const [retireAfter, setRetireAfter] = useState(false);
   const { toasts, addToast, dismiss } = useToast();
+  const { status: walletStatus, address: walletKey, refresh: refreshWallet } = useWalletStatus();
 
   const totalCost = listing
     ? calculateCreditCost(amount, BigInt(listing.pricePerCredit))
     : 0n;
 
-  async function handleConnect() {
-    try {
-      const key = await connectFreighter();
-      setWalletKey(key);
-      addToast({ type: "success", title: "Wallet connected", message: key.slice(0, 8) + "…" });
-    } catch (e) {
-      addToast({ type: "error", title: "Wallet error", message: getWalletErrorMessage(e) });
-    }
+  async function handleConnect(key: string) {
+    addToast({ type: "success", title: "Wallet connected", message: key.slice(0, 8) + "…" });
   }
 
   async function handlePurchase() {
@@ -144,19 +140,9 @@ export default function BuyPage() {
             <TransactionStatus status={txStatus} txHash={txHash ?? undefined} />
           )}
 
-          {/* CTA */}
-          {!walletKey ? (
-            <button
-              type="button"
-              onClick={handleConnect}
-              style={{
-                background: colors.primary[600], color: "#fff",
-                border: "none", borderRadius: "0.5rem",
-                padding: "0.875rem", fontSize: "1rem", fontWeight: 700, cursor: "pointer",
-              }}
-            >
-              Connect Wallet to Purchase
-            </button>
+          {/* CTA / Wallet Prompt */}
+          {walletStatus !== "ready" ? (
+            <WalletPrompt status={walletStatus} onConnect={handleConnect} refresh={refreshWallet} />
           ) : (
             <button
               type="button"
