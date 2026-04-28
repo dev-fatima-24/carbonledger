@@ -41,6 +41,7 @@ export class ListingsQueryDto {
   @IsString() @IsOptional() country?: string;
   @IsString() @IsOptional() minPrice?: string;
   @IsString() @IsOptional() maxPrice?: string;
+  @IsString() @IsOptional() search?: string;
   @IsString() @IsOptional() cursor?: string;
   @IsInt() @Min(1) @Max(100) @Type(() => Number) @IsOptional() limit?: number = 20;
 }
