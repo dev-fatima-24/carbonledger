@@ -29,9 +29,11 @@ function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: 
   const cfg = toastConfig[toast.type];
 
   useEffect(() => {
-    const t = setTimeout(() => onDismiss(toast.id), 6000);
+    // Errors persist until manually dismissed; all others auto-dismiss after 5 s
+    if (toast.type === "error") return;
+    const t = setTimeout(() => onDismiss(toast.id), 5000);
     return () => clearTimeout(t);
-  }, [toast.id, onDismiss]);
+  }, [toast.id, toast.type, onDismiss]);
 
   return (
     <div
@@ -112,7 +114,11 @@ export function useToast() {
 
   function addToast(toast: Omit<ToastMessage, "id">) {
     const id = Math.random().toString(36).slice(2);
-    setToasts(prev => [...prev, { ...toast, id }]);
+    setToasts(prev => {
+      const next = [...prev, { ...toast, id }];
+      // Keep at most 3 toasts; drop the oldest when over the limit
+      return next.length > 3 ? next.slice(next.length - 3) : next;
+    });
   }
 
   function dismiss(id: string) {
