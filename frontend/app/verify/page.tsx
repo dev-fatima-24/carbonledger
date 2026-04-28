@@ -6,25 +6,22 @@ import { getWalletErrorMessage } from "../../lib/wallet-errors";
 import { colors } from "../../styles/design-system";
 import TransactionStatus, { TxStatus } from "../../components/TransactionStatus";
 import Toast, { useToast } from "../../components/Toast";
+import { useWalletStatus } from "../../hooks/useWalletStatus";
+import WalletPrompt from "../../components/WalletPrompt";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL!;
 
 export default function VerifyPage() {
-  const [walletKey, setWalletKey] = useState<string | null>(null);
   const [projectId, setProjectId] = useState("");
   const [action, setAction]       = useState<"approve" | "reject">("approve");
   const [reason, setReason]       = useState("");
   const [txStatus, setTxStatus]   = useState<TxStatus | null>(null);
   const [txHash, setTxHash]       = useState<string | null>(null);
   const { toasts, addToast, dismiss } = useToast();
+  const { status: walletStatus, address: walletKey, refresh: refreshWallet } = useWalletStatus();
 
-  async function handleConnect() {
-    try {
-      const key = await connectFreighter();
-      setWalletKey(key);
-    } catch (e) {
-      addToast({ type: "error", title: "Wallet error", message: getWalletErrorMessage(e) });
-    }
+  async function handleConnect(key: string) {
+    addToast({ type: "success", title: "Wallet connected", message: key.slice(0, 8) + "…" });
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -112,14 +109,8 @@ export default function VerifyPage() {
 
         {txStatus && <TransactionStatus status={txStatus} txHash={txHash ?? undefined} />}
 
-        {!walletKey ? (
-          <button type="button" onClick={handleConnect} style={{
-            background: colors.primary[600], color: "#fff",
-            border: "none", borderRadius: "0.5rem",
-            padding: "0.875rem", fontSize: "1rem", fontWeight: 700, cursor: "pointer",
-          }}>
-            Connect Verifier Wallet
-          </button>
+        {walletStatus !== "ready" ? (
+          <WalletPrompt status={walletStatus} onConnect={handleConnect} refresh={refreshWallet} />
         ) : (
           <button type="submit" style={{
             background: action === "approve" ? colors.primary[600] : "#dc2626",

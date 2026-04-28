@@ -1,6 +1,7 @@
 'use client';
 
 import { useIsMobile } from '@/hooks/useMediaQuery';
+import ErrorBoundary from '../../components/ErrorBoundary';
 
 export default function DashboardPage() {
   const isMobile = useIsMobile();
@@ -19,6 +20,7 @@ export default function DashboardPage() {
   ];
 
   return (
+    <ErrorBoundary>
     <div className="container" style={{ padding: isMobile ? '16px' : '24px' }}>
       <h1 style={{ fontSize: isMobile ? '24px' : '32px', marginBottom: '24px' }}>
         Dashboard
@@ -82,5 +84,6 @@ export default function DashboardPage() {
         </div>
       )}
     </div>
+    </ErrorBoundary>
   );
 }

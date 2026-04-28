@@ -275,3 +275,27 @@ model AdminConfig {
   value     String
   updatedAt DateTime @updatedAt
 }
+
+model SorobanSubmission {
+  id         String   @id @default(cuid())
+  contractId String
+  status     String   // "success" | "failed"
+  error      String?
+  createdAt  DateTime @default(now())
+
+  @@index([contractId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model OracleUpdate {
+  id        String   @id @default(cuid())
+  dataType  String   // "verification" | "price" | "satellite"
+  success   Boolean
+  error     String?
+  createdAt DateTime @default(now())
+
+  @@index([dataType])
+  @@index([success])
+  @@index([createdAt])
+}

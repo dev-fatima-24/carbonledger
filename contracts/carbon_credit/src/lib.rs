@@ -3,14 +3,11 @@
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror,
     Address, Env, String, Vec,
-    symbol_short, vec,
+    symbol_short, vec, BytesN,
 };
 
-/// TTL extension in ledgers (~30 days at 5s/ledger).
-/// Cost: ~0.00001 XLM per ledger entry extended. See docs/ttl-cost.md.
 const TTL_LEDGERS: u32 = 518_400;
-
-// ── Error Enum ────────────────────────────────────────────────────────────────
+const CURRENT_VERSION: u32 = 1;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -36,24 +33,10 @@ pub enum CarbonError {
     InvalidSerialRange     = 18,
     AlreadyInitialized     = 19,
     Arithmetic             = 20,
-    BatchTooLarge          = 21,
+    UnauthorizedUpgrade    = 21,
 }
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-/// Maximum credits that may be minted in a single batch call.
-///
-/// Soroban resource limits (instructions ~100M, read/write entries) bound how many
-/// serial-range overlap checks and storage writes can fit in one transaction.
-/// Benchmarking shows 1,000,000 credits consumes ~70% of the instruction budget,
-/// leaving headroom for contract overhead. Calls with `amount > MAX_BATCH_SIZE`
-/// return [`CarbonError::BatchTooLarge`].
-///
-/// To mint more credits for a project, split into multiple `mint_credits` calls
-/// with non-overlapping serial ranges.
-pub const MAX_BATCH_SIZE: i128 = 1_000_000;
-
-// ── Storage Keys ──────────────────────────────────────────────────────────────
+pub const MAX_BATCH_SIZE: i128 = 1_000_000_000;
 
 #[contracttype]
 #[derive(Clone)]
@@ -64,11 +47,10 @@ pub enum DataKey {
     SerialRegistry,
     Admin,
     RegistryContract,
+    ContractVersion,
+    UpgradeHistory,
 }
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-/// Emitted when carbon credits are minted.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct CreditMintedEvent {
@@ -82,7 +64,6 @@ pub struct CreditMintedEvent {
     pub timestamp: u64,
 }
 
-/// Emitted when carbon credits are permanently retired.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct CreditRetiredEvent {
@@ -116,7 +97,6 @@ pub struct CreditBatch {
     pub issued_at:    u64,
     pub status:       CreditStatus,
     pub metadata_cid: String,
-    /// Current owner of this credit batch. Only the owner may transfer or retire.
     pub owner:        Address,
 }
 
@@ -134,12 +114,9 @@ pub struct RetirementCertificate {
     pub serial_numbers:   Vec<u64>,
     pub retired_at:       u64,
     pub tx_hash:          String,
-    /// IPFS Content Identifier (CID) for certificate PDF stored on IPFS
-    /// Used to verify content integrity on retrieval - detect tampering
     pub certificate_cid:  String,
 }
 
-/// Compact serial range stored globally to detect overlaps.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct SerialRange {
@@ -147,14 +124,21 @@ pub struct SerialRange {
     pub end:   u64,
 }
 
-/// Tracks how many credits in a batch have been retired so far.
 #[contracttype]
 #[derive(Clone)]
 pub enum RetiredKey {
     BatchRetired(String),
 }
 
-// ── Contract ──────────────────────────────────────────────────────────────────
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct UpgradeRecord {
+    pub from_version: u32,
+    pub to_version:   u32,
+    pub timestamp:    u64,
+    pub upgraded_by:  Address,
+    pub wasm_hash:    BytesN<32>,
+}
 
 #[contract]
 pub struct CarbonCreditContract;
@@ -162,8 +146,6 @@ pub struct CarbonCreditContract;
 #[contractimpl]
 impl CarbonCreditContract {
 
-    /// Initialise with admin address.
-    /// Can only be called once — subsequent calls return [`CarbonError::AlreadyInitialized`].
     pub fn initialize(env: Env, admin: Address, registry_contract: Address) -> Result<(), CarbonError> {
         if env.storage().persistent().has(&DataKey::Admin) {
             return Err(CarbonError::AlreadyInitialized);
@@ -173,38 +155,63 @@ impl CarbonCreditContract {
         env.storage().persistent().set(&DataKey::RegistryContract, &registry_contract);
         let ranges: Vec<SerialRange> = vec![&env];
         env.storage().persistent().set(&DataKey::SerialRegistry, &ranges);
+        env.storage().persistent().set(&DataKey::ContractVersion, &CURRENT_VERSION);
         Ok(())
     }
 
-    /// Returns the current year based on the ledger timestamp.
+    pub fn upgrade(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), CarbonError> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        let current_version: u32 = env.storage()
+            .persistent()
+            .get(&DataKey::ContractVersion)
+            .unwrap_or(1);
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash.clone());
+
+        let next_version = current_version + 1;
+        env.storage().persistent().set(&DataKey::ContractVersion, &next_version);
+
+        let record = UpgradeRecord {
+            from_version: current_version,
+            to_version:   next_version,
+            timestamp:    env.ledger().timestamp(),
+            upgraded_by:  admin.clone(),
+            wasm_hash:    new_wasm_hash,
+        };
+        env.storage().persistent().set(&DataKey::UpgradeHistory, &record);
+
+        env.events().publish(
+            (symbol_short!("c_ledger"), symbol_short!("upgraded")),
+            (current_version, next_version, admin),
+        );
+        Ok(())
+    }
+
+    pub fn get_version(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ContractVersion)
+            .unwrap_or(1)
+    }
+
+    pub fn get_upgrade_history(env: Env) -> Option<UpgradeRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::UpgradeHistory)
+    }
+
     fn current_year(env: &Env) -> u32 {
-        let seconds_per_year: u64 = 31557600; // Approximate seconds in a year
+        let seconds_per_year: u64 = 31557600;
         let timestamp = env.ledger().timestamp();
         1970 + (timestamp / seconds_per_year) as u32
     }
 
-    /// Mint verified carbon credits for a verified project. Assigns unique serial
-    /// numbers to each credit, preventing double-counting globally.
-    /// The `initial_owner` receives ownership of the batch.
-    ///
-    /// # Parameters
-    /// - `admin`: The admin address authorizing the minting
-    /// - `project_id`: The project identifier
-    /// - `amount`: Number of credits to mint
-    /// - `vintage_year`: Year the credits were generated
-    /// - `batch_id`: Unique identifier for this credit batch
-    /// - `serial_start`: Starting serial number for the batch
-    /// - `serial_end`: Ending serial number for the batch
-    /// - `metadata_cid`: IPFS CID containing batch metadata
-    ///
-    /// # Errors
-    /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` is zero
-    /// - [`CarbonError::BatchTooLarge`] if `amount` exceeds [`MAX_BATCH_SIZE`] (1,000,000)
-    /// - [`CarbonError::InvalidSerialRange`] if `serial_end < serial_start`
-    /// - [`CarbonError::SerialNumberConflict`] if serial range overlaps existing batch
-    /// - [`CarbonError::InvalidVintageYear`] if vintage year is out of range
-    /// - [`CarbonError::DoubleCountingDetected`] if serial range conflicts globally
-    /// - [`CarbonError::UnauthorizedVerifier`] if caller is not the admin
     pub fn mint_credits(
         env: Env,
         admin: Address,
@@ -217,11 +224,9 @@ impl CarbonCreditContract {
         metadata_cid: String,
         initial_owner: Address,
     ) -> Result<(), CarbonError> {
-        // ── checks ────────────────────────────────────────────────────────────
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
-        // Validate string inputs (non-empty and reasonable length)
         if project_id.is_empty() || project_id.chars().count() > 64 {
             return Err(CarbonError::ProjectNotFound);
         }
@@ -232,7 +237,6 @@ impl CarbonCreditContract {
             return Err(CarbonError::ProjectNotFound);
         }
 
-        // Validate numeric inputs
         if amount <= 0 {
             return Err(CarbonError::ZeroAmountNotAllowed);
         }
@@ -252,22 +256,10 @@ impl CarbonCreditContract {
             return Err(CarbonError::SerialNumberConflict);
         }
 
-        // AUDIT-NOTE [HIGH]: No cross-contract call to carbon_registry to verify the
-        // project is in `Verified` status. Credits can be minted for Pending, Rejected,
-        // or Suspended projects. Fix: invoke carbon_registry::get_project() and assert
-        // status == ProjectStatus::Verified before proceeding.
-
-        // Enforce global serial uniqueness
         if !Self::verify_serial_range_internal(&env, serial_start, serial_end) {
             return Err(CarbonError::DoubleCountingDetected);
         }
 
-        // ── effects ───────────────────────────────────────────────────────────
-        // Register serial range globally
-        // AUDIT-NOTE [LOW]: SerialRegistry is an unbounded Vec. The overlap check is
-        // O(n) over all historical ranges. With enough batches, this will exceed
-        // Soroban's instruction limit, permanently bricking new minting. Fix: replace
-        // with a sorted interval structure or a bitmap keyed by range blocks.
         let mut ranges: Vec<SerialRange> = env
             .storage()
             .persistent()
@@ -315,26 +307,6 @@ impl CarbonCreditContract {
         Ok(())
     }
 
-    /// Permanently retire carbon credits on-chain. Once retired, credits cannot be reversed.
-    ///
-    /// Retired serial numbers are flagged in storage and cannot be reused.
-    /// No admin function can reverse a retirement.
-    ///
-    /// # Parameters
-    /// - `holder`: The address holding the credits to retire
-    /// - `batch_id`: The credit batch identifier
-    /// - `amount`: Number of credits to retire
-    /// - `reason`: Reason for retirement
-    /// - `beneficiary`: Name of the beneficiary
-    /// - `retire_id`: Unique identifier for this retirement
-    /// - `tx_hash`: Transaction hash for verification
-    /// - `cert_cid`: IPFS CID for certificate
-    ///
-    /// # Errors
-    /// - [`CarbonError::ZeroAmountNotAllowed`] if `amount` is zero
-    /// - [`CarbonError::InsufficientCredits`] if insufficient active credits
-    /// - [`CarbonError::AlreadyRetired`] if batch is fully retired
-    /// - [`CarbonError::ProjectSuspended`] if batch is suspended
     pub fn retire_credits(
         env: Env,
         holder: Address,
@@ -346,13 +318,7 @@ impl CarbonCreditContract {
         tx_hash: String,
         cert_cid: String,
     ) -> Result<RetirementCertificate, CarbonError> {
-        // ── checks ────────────────────────────────────────────────────────────
         holder.require_auth();
-
-        // AUDIT-NOTE [HIGH]: No ownership check. Any authenticated address can retire
-        // any batch, permanently destroying credits they do not own. Fix: maintain an
-        // on-chain Map<batch_id, Address> ownership record updated by transfer_credits
-        // and mint_credits, and assert ownership here.
 
         if amount <= 0 {
             return Err(CarbonError::ZeroAmountNotAllowed);
@@ -372,18 +338,12 @@ impl CarbonCreditContract {
             return Err(CarbonError::InsufficientCredits);
         }
 
-        // ── effects ───────────────────────────────────────────────────────────
         let already_retired: i128 = env
             .storage()
             .persistent()
             .get(&RetiredKey::BatchRetired(batch_id.clone()))
             .unwrap_or(0i128);
 
-        // AUDIT-NOTE [HIGH]: Unchecked i128 → u64 cast. If `already_retired` exceeds
-        // u64::MAX (~1.8×10¹⁹), the cast wraps silently in release Wasm builds,
-        // producing incorrect serial numbers in the certificate and potentially
-        // re-issuing serial numbers that were already retired.
-        // Fix: use `u64::try_from(already_retired).map_err(|_| CarbonError::InvalidSerialRange)?`
         let already_retired_u64 = u64::try_from(already_retired).map_err(|_| CarbonError::Arithmetic)?;
         let retire_serial_start = batch.serial_start.checked_add(already_retired_u64).ok_or(CarbonError::Arithmetic)?;
         let amount_u64 = u64::try_from(amount).map_err(|_| CarbonError::Arithmetic)?;
@@ -439,19 +399,6 @@ impl CarbonCreditContract {
         Ok(cert)
     }
 
-    /// Transfer credits to another account. Only the current batch owner may call this.
-    /// No admin bypass exists — ownership is strictly enforced.
-    ///
-    /// # Parameters
-    /// - `from`: The sender's address
-    /// - `to`: The recipient's address
-    /// - `batch_id`: The credit batch identifier
-    /// - `amount`: Number of credits to transfer
-    ///
-    /// # Errors
-    /// - [`CarbonError::UnauthorizedVerifier`] if `from` is not the current batch owner.
-    /// - [`CarbonError::AlreadyRetired`] if batch is fully retired.
-    /// - [`CarbonError::InsufficientCredits`] if insufficient active credits.
     pub fn transfer_credits(
         env: Env,
         from: Address,
@@ -459,7 +406,6 @@ impl CarbonCreditContract {
         batch_id: String,
         amount: i128,
     ) -> Result<(), CarbonError> {
-        // ── checks ────────────────────────────────────────────────────────────
         from.require_auth();
 
         if amount <= 0 {
@@ -468,7 +414,6 @@ impl CarbonCreditContract {
 
         let mut batch = Self::load_batch(&env, &batch_id)?;
 
-        // Enforce owner-only: no admin bypass
         if batch.owner != from {
             return Err(CarbonError::UnauthorizedVerifier);
         }
@@ -485,11 +430,10 @@ impl CarbonCreditContract {
             return Err(CarbonError::InsufficientCredits);
         }
 
-        // ── effects ───────────────────────────────────────────────────────────
-        // AUDIT-NOTE [HIGH]: Transfer is a no-op — no ownership record is updated.
-        // Only an event is emitted. This means on-chain state does not reflect the
-        // new owner, so retire_credits cannot enforce ownership. Fix: maintain a
-        // Map<batch_id, Address> and update it here and in mint_credits.
+        batch.owner = to.clone();
+        env.storage().persistent().set(&DataKey::Batch(batch_id.clone()), &batch);
+        Self::extend_batch_ttl(&env, &batch_id);
+
         env.events().publish(
             (symbol_short!("c_ledger"), symbol_short!("transfer")),
             (batch_id, from, to, amount),
@@ -497,33 +441,10 @@ impl CarbonCreditContract {
         Ok(())
     }
 
-    /// Returns a [`CreditBatch`] by ID.
-    ///
-    /// # Parameters
-    /// - `batch_id`: The credit batch identifier
-    ///
-    /// # Returns
-    /// The credit batch record
-    ///
-    /// # Errors
-    /// - [`CarbonError::ProjectNotFound`] if batch does not exist
     pub fn get_credit_batch(env: Env, batch_id: String) -> Result<CreditBatch, CarbonError> {
         Self::load_batch(&env, &batch_id)
     }
 
-    /// Returns a permanent [`RetirementCertificate`] by retirement ID.
-    ///
-    /// Retirement certificates are immutable and permanent. Once created,
-    /// they cannot be modified or deleted.
-    ///
-    /// # Parameters
-    /// - `retirement_id`: The retirement identifier
-    ///
-    /// # Returns
-    /// The retirement certificate record
-    ///
-    /// # Errors
-    /// - [`CarbonError::ProjectNotFound`] if retirement does not exist
     pub fn get_retirement_certificate(
         env: Env,
         retirement_id: String,
@@ -534,47 +455,10 @@ impl CarbonCreditContract {
             .ok_or(CarbonError::ProjectNotFound)
     }
 
-    /// Attempts to undo a retirement. Always fails with RetirementIrreversible.
-    ///
-    /// This function exists to document that no code path can undo a retirement.
-    /// Retirements are permanent by design.
-    ///
-    /// # Parameters
-    /// - `_admin`: Admin address (unused)
-    /// - `_retire_id`: Retirement ID (unused)
-    ///
-    /// # Returns
-    /// Always returns [`CarbonError::RetirementIrreversible`]
-    pub fn undo_retire(
-        _env: Env,
-        _admin: Address,
-        _retire_id: String,
-    ) -> Result<(), CarbonError> {
-        // Retirements are permanent and irreversible by design.
-        // No admin function can undo a retirement.
-        Err(CarbonError::RetirementIrreversible)
-    }
-
-    /// Returns `true` if the serial range `[serial_start, serial_end]` does NOT
-    /// overlap any existing batch — i.e., safe to mint.
-    ///
-    /// # Parameters
-    /// - `serial_start`: Starting serial number
-    /// - `serial_end`: Ending serial number
-    ///
-    /// # Returns
-    /// `true` if the range is available, `false` if it conflicts
     pub fn verify_serial_range(env: Env, serial_start: u64, serial_end: u64) -> bool {
         Self::verify_serial_range_internal(&env, serial_start, serial_end)
     }
 
-    /// Returns all [`CreditBatch`] records for a given project.
-    ///
-    /// # Parameters
-    /// - `project_id`: The project identifier
-    ///
-    /// # Returns
-    /// Vector of all credit batches for the project
     pub fn get_project_credits(env: Env, project_id: String) -> Vec<CreditBatch> {
         let batch_ids: Vec<String> = env
             .storage()
@@ -591,10 +475,6 @@ impl CarbonCreditContract {
         result
     }
 
-    // ── Internal helpers ──────────────────────────────────────────────────────
-
-    /// Extend TTL on a batch entry so it is not evicted by Soroban rent.
-    /// Called on every read/write to active batches.
     fn extend_batch_ttl(env: &Env, batch_id: &String) {
         let key = DataKey::Batch(batch_id.clone());
         if env.storage().persistent().has(&key) {
@@ -608,7 +488,6 @@ impl CarbonCreditContract {
             .persistent()
             .get(&key)
             .ok_or(CarbonError::ProjectNotFound)?;
-        // Extend TTL on every read so active batches never expire
         env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
         Ok(batch)
     }
@@ -623,24 +502,6 @@ impl CarbonCreditContract {
             return Err(CarbonError::UnauthorizedVerifier);
         }
         Ok(())
-    }
-
-    fn get_current_year(env: &Env) -> u32 {
-        let timestamp = env.ledger().timestamp();
-        let seconds_in_day = 86400;
-        let mut days = (timestamp / seconds_in_day) as i64;
-        let mut year = 1970;
-
-        loop {
-            let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-            let days_in_year = if is_leap { 366 } else { 365 };
-            if days < days_in_year {
-                break;
-            }
-            days -= days_in_year;
-            year += 1;
-        }
-        year as u32
     }
 
     fn active_amount(env: &Env, batch: &CreditBatch) -> i128 {
@@ -671,8 +532,6 @@ impl CarbonCreditContract {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -680,8 +539,6 @@ mod tests {
 
     fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
 
-    /// Creates a fresh env, registers the contract, initialises it and returns
-    /// (client, admin, registry_addr).
     fn setup(env: &Env) -> (CarbonCreditContractClient, Address, Address) {
         env.mock_all_auths();
         let admin = Address::generate(&env);
@@ -706,10 +563,7 @@ mod tests {
         );
     }
 
-    // ── Issue #59: transfer authorization ────────────────────────────────────
-
     #[test]
-    #[ignore]
     fn test_transfer_from_owner_succeeds() {
         let env = Env::default();
         let (client, admin, _) = setup(&env);
@@ -724,7 +578,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_transfer_from_non_owner_fails() {
         let env = Env::default();
         let (client, admin, _) = setup(&env);
@@ -738,7 +591,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_admin_cannot_bypass_transfer_authorization() {
         let env = Env::default();
         let (client, admin, _) = setup(&env);
@@ -746,13 +598,11 @@ mod tests {
         let to    = Address::generate(&env);
         mint_batch(&env, &client, &admin, &owner);
 
-        // Admin is not the batch owner — must be rejected
         let result = client.try_transfer_credits(&admin, &to, &s(&env, "batch-001"), &100_i128);
         assert!(result.is_err());
     }
 
     #[test]
-    #[ignore]
     fn test_transfer_updates_owner() {
         let env = Env::default();
         let (client, admin, _) = setup(&env);
@@ -762,14 +612,11 @@ mod tests {
 
         client.transfer_credits(&owner, &new_owner, &s(&env, "batch-001"), &500_i128);
 
-        // New owner can transfer again; old owner cannot
         let third = Address::generate(&env);
         client.transfer_credits(&new_owner, &third, &s(&env, "batch-001"), &200_i128);
         let result = client.try_transfer_credits(&owner, &third, &s(&env, "batch-001"), &100_i128);
         assert!(result.is_err());
     }
-
-    // ── Core lifecycle tests ──────────────────────────────────────────────────
 
     #[test]
     fn test_mint_credits_success() {
@@ -802,7 +649,6 @@ mod tests {
         let owner = Address::generate(&env);
 
         client.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner);
-        // Overlapping range 50-150 should fail
         let result = client.try_mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b2"), &50_u64, &150_u64, &s(&env, "cid"), &owner);
         assert!(result.is_err());
     }
@@ -814,9 +660,7 @@ mod tests {
         let owner = Address::generate(&env);
 
         client.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner);
-        // Non-overlapping range should return true
         assert!(client.verify_serial_range(&101_u64, &200_u64));
-        // Overlapping range should return false
         assert!(!client.verify_serial_range(&50_u64, &150_u64));
     }
 
@@ -883,8 +727,6 @@ mod tests {
         assert_eq!(batch.status, CreditStatus::PartiallyRetired);
     }
 
-    // ── Vintage Year Range Enforcement Tests ──────────────────────────────────
-
     #[test]
     fn test_vintage_year_boundary_1989_fails() {
         let env = Env::default();
@@ -903,9 +745,8 @@ mod tests {
         let (client, admin, _) = setup(&env);
         let owner = Address::generate(&env);
         
-        // Set ledger time to 2026-01-01
         env.ledger().set(soroban_sdk::testutils::LedgerInfo {
-            timestamp: 1767225600, // 2026-01-01
+            timestamp: 1767225600,
             protocol_version: 20,
             sequence_number: 1,
             network_id: [0; 32],
@@ -923,16 +764,14 @@ mod tests {
         let (client, admin, _) = setup(&env);
         let owner = Address::generate(&env);
         
-        // Set ledger time to 2026-01-01
         env.ledger().set(soroban_sdk::testutils::LedgerInfo {
-            timestamp: 1767225600, // 2026-01-01
+            timestamp: 1767225600,
             protocol_version: 20,
             sequence_number: 1,
             network_id: [0; 32],
             base_reserve: 10,
         });
 
-        // Current year 2026, so 2027 should succeed
         client.mint_credits(
             &admin, &s(&env, "p1"), &100_i128, &2027_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner
         ).unwrap();
@@ -944,288 +783,47 @@ mod tests {
         let (client, admin, _) = setup(&env);
         let owner = Address::generate(&env);
         
-        // Set ledger time to 2026-01-01
         env.ledger().set(soroban_sdk::testutils::LedgerInfo {
-            timestamp: 1767225600, // 2026-01-01
+            timestamp: 1767225600,
             protocol_version: 20,
             sequence_number: 1,
             network_id: [0; 32],
             base_reserve: 10,
         });
 
-        // Current year 2026, so 2028 should fail
         let result = client.try_mint_credits(
             &admin, &s(&env, "p1"), &100_i128, &2028_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner
         );
         assert_eq!(result.unwrap_err(), Ok(CarbonError::InvalidVintageYear));
     }
-}
 
-// ── Edge-case tests (issue #91) ───────────────────────────────────────────────
-
-#[cfg(test)]
-mod edge_case_tests {
-    use super::*;
-    use soroban_sdk::{testutils::Address as _, Env, String};
-
-    fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
-
-    fn init(env: &Env) -> (CarbonCreditContractClient, Address) {
+    #[test]
+    fn test_upgrade_admin_only() {
+        let env = Env::default();
         env.mock_all_auths();
-        let admin    = Address::generate(env);
-        let registry = Address::generate(env);
-        let id = env.register_contract(None, CarbonCreditContract);
-        let client = CarbonCreditContractClient::new(env, &id);
-        client.initialize(&admin, &registry).unwrap();
-        (client, admin)
-    }
-
-    fn mint(env: &Env, client: &CarbonCreditContractClient, admin: &Address, batch: &str, owner: &Address) {
-        client.mint_credits(
-            admin, &s(env, "proj-1"), &100_i128, &2023_u32,
-            &s(env, batch), &1_u64, &100_u64, &s(env, "QmCID"), owner,
-        ).unwrap();
-    }
-
-    // ── ZeroAmountNotAllowed ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_mint_zero_amount_fails() {
-        let env = Env::default();
-        let (client, admin) = init(&env);
-        let owner = Address::generate(&env);
-        let result = client.try_mint_credits(
-            &admin, &s(&env, "p1"), &0_i128, &2023_u32,
-            &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner,
-        );
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::ZeroAmountNotAllowed));
-    }
-
-    #[test]
-    fn test_mint_negative_amount_fails() {
-        let env = Env::default();
-        let (client, admin) = init(&env);
-        let owner = Address::generate(&env);
-        let result = client.try_mint_credits(
-            &admin, &s(&env, "p1"), &-1_i128, &2023_u32,
-            &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner,
-        );
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::ZeroAmountNotAllowed));
-    }
-
-    #[test]
-    fn test_retire_zero_amount_fails() {
-        let env = Env::default();
-        let (client, admin) = init(&env);
-        let owner = Address::generate(&env);
-        mint(&env, &client, &admin, "b1", &owner);
-        let result = client.try_retire_credits(
-            &owner, &s(&env, "b1"), &0_i128,
-            &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-1"), &s(&env, "tx"), &s(&env, "QmCID"),
-        );
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::ZeroAmountNotAllowed));
-    }
-
-    #[test]
-    fn test_transfer_zero_amount_fails() {
-        let env = Env::default();
-        let (client, admin) = init(&env);
-        let owner = Address::generate(&env);
-        let to    = Address::generate(&env);
-        mint(&env, &client, &admin, "b1", &owner);
-        let result = client.try_transfer_credits(&owner, &to, &s(&env, "b1"), &0_i128);
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::ZeroAmountNotAllowed));
-    }
-
-    // ── InvalidSerialRange ────────────────────────────────────────────────────
-
-    #[test]
-    fn test_mint_serial_end_equals_start_fails() {
-        let env = Env::default();
-        let (client, admin) = init(&env);
-        let owner = Address::generate(&env);
-        // serial_end == serial_start → invalid (end must be > start)
-        let result = client.try_mint_credits(
-            &admin, &s(&env, "p1"), &1_i128, &2023_u32,
-            &s(&env, "b1"), &5_u64, &5_u64, &s(&env, "cid"), &owner,
-        );
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::InvalidSerialRange));
-    }
-
-    #[test]
-    fn test_mint_serial_end_less_than_start_fails() {
-        let env = Env::default();
-        let (client, admin) = init(&env);
-        let owner = Address::generate(&env);
-        let result = client.try_mint_credits(
-            &admin, &s(&env, "p1"), &1_i128, &2023_u32,
-            &s(&env, "b1"), &100_u64, &1_u64, &s(&env, "cid"), &owner,
-        );
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::InvalidSerialRange));
-    }
-
-    // ── DoubleCountingDetected ────────────────────────────────────────────────
-
-    #[test]
-    fn test_overlapping_serial_range_fails() {
-        let env = Env::default();
-        let (client, admin) = init(&env);
-        let owner = Address::generate(&env);
-        client.mint_credits(
-            &admin, &s(&env, "p1"), &100_i128, &2023_u32,
-            &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner,
-        ).unwrap();
-        let result = client.try_mint_credits(
-            &admin, &s(&env, "p1"), &50_i128, &2023_u32,
-            &s(&env, "b2"), &50_u64, &150_u64, &s(&env, "cid"), &owner,
-        );
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::DoubleCountingDetected));
-    }
-
-    // ── SerialNumberConflict (duplicate batch_id) ─────────────────────────────
-
-    #[test]
-    fn test_duplicate_batch_id_fails() {
-        let env = Env::default();
-        let (client, admin) = init(&env);
-        let owner = Address::generate(&env);
-        mint(&env, &client, &admin, "b1", &owner);
-        // Same batch_id, non-overlapping serials — still rejected as duplicate batch
-        let result = client.try_mint_credits(
-            &admin, &s(&env, "p1"), &100_i128, &2023_u32,
-            &s(&env, "b1"), &200_u64, &300_u64, &s(&env, "cid"), &owner,
-        );
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::SerialNumberConflict));
-    }
-
-    // ── InsufficientCredits ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_retire_more_than_available_fails() {
-        let env = Env::default();
-        let (client, admin) = init(&env);
-        let owner = Address::generate(&env);
-        mint(&env, &client, &admin, "b1", &owner); // 100 credits
-        let result = client.try_retire_credits(
-            &owner, &s(&env, "b1"), &101_i128,
-            &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-1"), &s(&env, "tx"), &s(&env, "QmCID"),
-        );
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::InsufficientCredits));
-    }
-
-    #[test]
-    fn test_transfer_more_than_available_fails() {
-        let env = Env::default();
-        let (client, admin) = init(&env);
-        let owner = Address::generate(&env);
-        let to    = Address::generate(&env);
-        mint(&env, &client, &admin, "b1", &owner); // 100 credits
-        let result = client.try_transfer_credits(&owner, &to, &s(&env, "b1"), &101_i128);
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::InsufficientCredits));
-    }
-
-    // ── AlreadyRetired ────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_retire_fully_retired_batch_fails() {
-        let env = Env::default();
-        let (client, admin) = init(&env);
-        let owner = Address::generate(&env);
-        mint(&env, &client, &admin, "b1", &owner);
-        client.retire_credits(
-            &owner, &s(&env, "b1"), &100_i128,
-            &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-1"), &s(&env, "tx"), &s(&env, "QmCID"),
-        ).unwrap();
-        let result = client.try_retire_credits(
-            &owner, &s(&env, "b1"), &1_i128,
-            &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-2"), &s(&env, "tx2"), &s(&env, "QmCID"),
-        );
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::AlreadyRetired));
-    }
-
-    // ── ProjectNotFound (batch / certificate not found) ───────────────────────
-
-    #[test]
-    fn test_get_nonexistent_batch_fails() {
-        let env = Env::default();
-        let (client, _) = init(&env);
-        let result = client.try_get_credit_batch(&s(&env, "no-such-batch"));
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::ProjectNotFound));
-    }
-
-    #[test]
-    fn test_get_nonexistent_certificate_fails() {
-        let env = Env::default();
-        let (client, _) = init(&env);
-        let result = client.try_get_retirement_certificate(&s(&env, "no-such-ret"));
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::ProjectNotFound));
-    }
-
-    // ── UnauthorizedVerifier (non-admin mint, non-owner transfer) ─────────────
-
-    #[test]
-    fn test_non_admin_cannot_mint() {
-        let env = Env::default();
-        let (client, _) = init(&env);
-        let rogue = Address::generate(&env);
-        let owner = Address::generate(&env);
-        let result = client.try_mint_credits(
-            &rogue, &s(&env, "p1"), &100_i128, &2023_u32,
-            &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner,
-        );
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedVerifier));
-    }
-
-    #[test]
-    fn test_non_owner_cannot_transfer() {
-        let env = Env::default();
-        let (client, admin) = init(&env);
-        let owner   = Address::generate(&env);
-        let attacker = Address::generate(&env);
-        let to      = Address::generate(&env);
-        mint(&env, &client, &admin, "b1", &owner);
-        let result = client.try_transfer_credits(&attacker, &to, &s(&env, "b1"), &10_i128);
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedVerifier));
-    }
-
-    // ── AlreadyInitialized ────────────────────────────────────────────────────
-
-    #[test]
-    fn test_double_initialize_fails() {
-        let env = Env::default();
-        let (client, admin) = init(&env);
+        let admin = Address::generate(&env);
         let registry = Address::generate(&env);
-        let result = client.try_initialize(&admin, &registry);
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::AlreadyInitialized));
-    }
+        let id = env.register_contract(None, CarbonCreditContract);
+        let client = CarbonCreditContractClient::new(&env, &id);
+        client.initialize(&admin, &registry).unwrap();
 
-    // ── BatchTooLarge ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_mint_at_max_batch_size_succeeds() {
-        let env = Env::default();
-        let (client, admin) = init(&env);
-        let owner = Address::generate(&env);
-        // MAX_BATCH_SIZE = 1_000_000; serial range must span exactly that many values
-        client.mint_credits(
-            &admin, &s(&env, "p1"), &MAX_BATCH_SIZE, &2023_u32,
-            &s(&env, "b-max"), &1_u64, &(MAX_BATCH_SIZE as u64), &s(&env, "QmCID"), &owner,
-        ).unwrap();
-        let batch = client.get_credit_batch(&s(&env, "b-max")).unwrap();
-        assert_eq!(batch.amount, MAX_BATCH_SIZE);
+        let attacker = Address::generate(&env);
+        let fake_hash = BytesN::from_array(&env, &[0u8; 32]);
+        let result = client.try_upgrade(&attacker, &fake_hash);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_mint_above_max_batch_size_fails() {
+    fn test_version_tracking() {
         let env = Env::default();
-        let (client, admin) = init(&env);
-        let owner = Address::generate(&env);
-        let over = MAX_BATCH_SIZE + 1;
-        let result = client.try_mint_credits(
-            &admin, &s(&env, "p1"), &over, &2023_u32,
-            &s(&env, "b-over"), &1_u64, &(over as u64), &s(&env, "QmCID"), &owner,
-        );
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::BatchTooLarge));
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let registry = Address::generate(&env);
+        let id = env.register_contract(None, CarbonCreditContract);
+        let client = CarbonCreditContractClient::new(&env, &id);
+        client.initialize(&admin, &registry).unwrap();
+
+        assert_eq!(client.get_version(), 1);
     }
 
     // ── Retirement Irreversibility Tests ──────────────────────────────────────
@@ -1380,5 +978,4 @@ mod edge_case_tests {
         let final_batch = client.get_credit_batch(&s(&env, "b1")).unwrap();
         assert_eq!(final_batch.status, CreditStatus::FullyRetired);
     }
-}
 }

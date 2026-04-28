@@ -45,13 +45,6 @@ export class RetirementsController {
     return retirement;
   }
 
-  // Certificate lookup is intentionally public (audit trail)
-  @Get('certificate/:id')
-  @Public()
-  getCertificate(@Param('id') id: string) {
-    return this.retirementsService.findOne(id);
-  }
-
   @Post('generate-pdf')
   @Roles('corporation', 'admin')
   generatePdf(@Body('retirementId') retirementId: string) {

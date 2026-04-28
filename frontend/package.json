@@ -10,6 +10,9 @@
     "test": "jest --passWithNoTests",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
+    "test:visual": "playwright test tests/visual-regression.spec.ts",
+    "test:visual:ui": "playwright test tests/visual-regression.spec.ts --ui",
+    "test:visual:update": "playwright test tests/visual-regression.spec.ts --update-snapshots",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build"
   },
