@@ -35,6 +35,12 @@ Understanding the system:
 | **[TTL Cost Analysis](ttl-cost.md)** | Soroban storage cost analysis | Developers |
 | **[Verifier Onboarding](verifier-onboarding.md)** | Guide for carbon verifiers | Verifiers |
 
+### 🌿 Carbon Domain References
+
+| Document | Description | Audience |
+|----------|-------------|----------|
+| **[Carbon Methodology Reference](CARBON_METHODOLOGY_REFERENCE.md)** | Supported methodologies, scoring rubric, and contract parameter mapping | All contributors |
+
 ### 🔌 API Documentation
 
 Technical references:

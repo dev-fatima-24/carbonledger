@@ -66,6 +66,8 @@ export default function RetirePage() {
     boxSizing: "border-box",
   };
 
+  const isDisabled = !beneficiary || !reason || txStatus === "submitted" || txStatus === "confirmed";
+
   return (
     <div style={{ maxWidth: "600px", margin: "0 auto", padding: "2.5rem 2rem" }}>
       <h1 style={{ fontSize: "2rem", fontWeight: 800, color: colors.neutral[900], margin: "0 0 0.5rem" }}>
@@ -91,10 +93,11 @@ export default function RetirePage() {
         </div>
 
         <div>
-          <label style={{ fontSize: "0.875rem", fontWeight: 600, color: colors.neutral[700], display: "block", marginBottom: "0.4rem" }}>
+          <label htmlFor="retire-beneficiary" style={{ fontSize: "0.875rem", fontWeight: 600, color: colors.neutral[700], display: "block", marginBottom: "0.4rem" }}>
             Beneficiary Name (appears on certificate)
           </label>
           <input
+            id="retire-beneficiary"
             type="text"
             placeholder="e.g. Acme Corporation"
             value={beneficiary}
@@ -104,10 +107,11 @@ export default function RetirePage() {
         </div>
 
         <div>
-          <label style={{ fontSize: "0.875rem", fontWeight: 600, color: colors.neutral[700], display: "block", marginBottom: "0.4rem" }}>
+          <label htmlFor="retire-reason" style={{ fontSize: "0.875rem", fontWeight: 600, color: colors.neutral[700], display: "block", marginBottom: "0.4rem" }}>
             Retirement Reason
           </label>
           <textarea
+            id="retire-reason"
             placeholder="e.g. Offsetting 2023 Scope 1 and 2 emissions"
             value={reason}
             onChange={e => setReason(e.target.value)}
@@ -117,12 +121,16 @@ export default function RetirePage() {
         </div>
 
         {/* Warning */}
-        <div style={{
-          background: "#fef9c3", border: "1px solid #fde047",
-          borderRadius: "0.5rem", padding: "0.875rem 1rem",
-          display: "flex", gap: "0.75rem",
-        }}>
-          <span>⚠️</span>
+        <div
+          id="retire-warning"
+          role="note"
+          style={{
+            background: "#fef9c3", border: "1px solid #fde047",
+            borderRadius: "0.5rem", padding: "0.875rem 1rem",
+            display: "flex", gap: "0.75rem",
+          }}
+        >
+          <span aria-hidden="true">⚠️</span>
           <p style={{ fontSize: "0.8rem", color: "#854d0e", margin: 0 }}>
             Retirement is <strong>permanent and irreversible</strong>. Once retired, these credits cannot be transferred, resold, or retired again.
           </p>
@@ -146,22 +154,29 @@ export default function RetirePage() {
         )}
 
         {!walletKey ? (
-          <button onClick={handleConnect} style={{
-            background: colors.primary[600], color: "#fff",
-            border: "none", borderRadius: "0.5rem",
-            padding: "0.875rem", fontSize: "1rem", fontWeight: 700, cursor: "pointer",
-          }}>
+          <button
+            type="button"
+            onClick={handleConnect}
+            style={{
+              background: colors.primary[600], color: "#fff",
+              border: "none", borderRadius: "0.5rem",
+              padding: "0.875rem", fontSize: "1rem", fontWeight: 700, cursor: "pointer",
+            }}
+          >
             Connect Wallet
           </button>
         ) : (
           <button
+            type="button"
             onClick={handleRetire}
-            disabled={!beneficiary || !reason || txStatus === "submitted" || txStatus === "confirmed"}
+            disabled={isDisabled}
+            aria-disabled={isDisabled}
+            aria-describedby="retire-warning"
             style={{
-              background: !beneficiary || !reason ? colors.neutral[300] : "#dc2626",
+              background: isDisabled ? colors.neutral[300] : "#dc2626",
               color: "#fff", border: "none", borderRadius: "0.5rem",
               padding: "0.875rem", fontSize: "1rem", fontWeight: 700,
-              cursor: !beneficiary || !reason ? "not-allowed" : "pointer",
+              cursor: isDisabled ? "not-allowed" : "pointer",
             }}
           >
             {txStatus === "pending"   ? "Preparing…"   :

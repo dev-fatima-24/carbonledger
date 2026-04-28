@@ -240,6 +240,9 @@ impl CarbonCreditContract {
         if amount <= 0 {
             return Err(CarbonError::ZeroAmountNotAllowed);
         }
+        if amount > MAX_BATCH_SIZE {
+            return Err(CarbonError::BatchTooLarge);
+        }
         if serial_end <= serial_start {
             return Err(CarbonError::InvalidSerialRange);
         }

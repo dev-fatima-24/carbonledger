@@ -98,6 +98,12 @@ services:
       LOG_LEVEL:         ${LOG_LEVEL:-info}
     ports:
       - "3001:3001"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3001/health/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     command: >
       sh -c "npx prisma migrate deploy && node dist/main"
     logging: *default-logging
@@ -108,7 +114,8 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     environment:
       NEXT_PUBLIC_API_URL:              http://localhost:3001/api/v1
       NEXT_PUBLIC_STELLAR_NETWORK:      ${STELLAR_NETWORK:-testnet}

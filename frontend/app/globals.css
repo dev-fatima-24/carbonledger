@@ -20,6 +20,16 @@ body {
   color: #333;
 }
 
+/* Shimmer animation for loading skeletons */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
 /* Touch target sizing - minimum 44x44px for all interactive elements */
 button,
 a,

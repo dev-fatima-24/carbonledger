@@ -10,6 +10,141 @@ on:
     - cron: "0 2 * * 0"
 
 jobs:
+  security-audit:
+    name: Security Audit (cargo / npm / pip)
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Rust: cargo audit ────────────────────────────────────────────────────
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo-audit advisory DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/advisory-db
+          key: cargo-advisory-db-${{ hashFiles('carbonledger/contracts/**/Cargo.lock') }}
+          restore-keys: cargo-advisory-db-
+
+      - name: Run cargo audit
+        id: cargo_audit
+        working-directory: carbonledger/contracts
+        # --deny unsound --deny yanked in addition to default --deny vulnerability
+        # Exit code 1 = vulnerabilities found (critical → block); we capture output
+        # for the PR comment and re-exit after posting.
+        run: |
+          cargo install cargo-audit --locked --quiet 2>/dev/null || true
+          cargo audit --deny unsound --deny yanked 2>&1 | tee /tmp/cargo-audit.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      # ── Node: npm audit ──────────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Cache backend node_modules
+        uses: actions/cache@v4
+        with:
+          path: carbonledger/backend/node_modules
+          key: npm-backend-${{ hashFiles('carbonledger/backend/package-lock.json') }}
+          restore-keys: npm-backend-
+
+      - name: Cache frontend node_modules
+        uses: actions/cache@v4
+        with:
+          path: carbonledger/frontend/node_modules
+          key: npm-frontend-${{ hashFiles('carbonledger/frontend/package-lock.json') }}
+          restore-keys: npm-frontend-
+
+      - name: Run npm audit (backend)
+        id: npm_audit_backend
+        working-directory: carbonledger/backend
+        run: |
+          npm ci --ignore-scripts
+          npm audit --audit-level=critical 2>&1 | tee /tmp/npm-audit-backend.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Run npm audit (frontend)
+        id: npm_audit_frontend
+        working-directory: carbonledger/frontend
+        run: |
+          npm ci --ignore-scripts
+          npm audit --audit-level=critical 2>&1 | tee /tmp/npm-audit-frontend.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      # ── Python: pip-audit ────────────────────────────────────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('carbonledger/oracle/requirements.txt') }}
+          restore-keys: pip-
+
+      - name: Run pip-audit
+        id: pip_audit
+        working-directory: carbonledger/oracle
+        run: |
+          pip install pip-audit --quiet
+          pip-audit -r requirements.txt --severity critical --format markdown 2>&1 | tee /tmp/pip-audit.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      # ── PR comment: warn on high findings ────────────────────────────────────
+      - name: Post audit summary comment on PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          CARGO_EXIT: ${{ steps.cargo_audit.outputs.exit_code }}
+          NPM_BACK_EXIT: ${{ steps.npm_audit_backend.outputs.exit_code }}
+          NPM_FRONT_EXIT: ${{ steps.npm_audit_frontend.outputs.exit_code }}
+          PIP_EXIT: ${{ steps.pip_audit.outputs.exit_code }}
+        run: |
+          BODY="## 🔒 Security Audit Results\n\n"
+
+          append_section() {
+            local label="$1" file="$2" exit_code="$3"
+            if [ "$exit_code" != "0" ]; then
+              BODY="${BODY}### ⚠️ ${label}\n\`\`\`\n$(head -60 "$file")\n\`\`\`\n\n"
+            else
+              BODY="${BODY}### ✅ ${label} — no issues found\n\n"
+            fi
+          }
+
+          append_section "cargo audit"       /tmp/cargo-audit.txt        "$CARGO_EXIT"
+          append_section "npm audit (backend)"  /tmp/npm-audit-backend.txt  "$NPM_BACK_EXIT"
+          append_section "npm audit (frontend)" /tmp/npm-audit-frontend.txt "$NPM_FRONT_EXIT"
+          append_section "pip-audit"         /tmp/pip-audit.txt           "$PIP_EXIT"
+
+          BODY="${BODY}\n> Commit \`${{ github.sha }}\` · [Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+          gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            --method POST \
+            --field body="$(printf '%b' "$BODY")"
+
+      # ── Block merge on critical findings ─────────────────────────────────────
+      - name: Fail on critical findings
+        run: |
+          FAILED=0
+          [ "${{ steps.cargo_audit.outputs.exit_code }}"       != "0" ] && echo "::error::cargo audit found critical vulnerabilities"       && FAILED=1
+          [ "${{ steps.npm_audit_backend.outputs.exit_code }}" != "0" ] && echo "::error::npm audit (backend) found critical vulnerabilities" && FAILED=1
+          [ "${{ steps.npm_audit_frontend.outputs.exit_code }}" != "0" ] && echo "::error::npm audit (frontend) found critical vulnerabilities" && FAILED=1
+          [ "${{ steps.pip_audit.outputs.exit_code }}"         != "0" ] && echo "::error::pip-audit found critical vulnerabilities"           && FAILED=1
+          exit $FAILED
+
   lint-dockerfiles:
     name: Lint Dockerfiles – no floating tags
     runs-on: ubuntu-latest
@@ -49,6 +184,20 @@ jobs:
       - name: Run contract tests
         working-directory: carbonledger/contracts
         run: cargo test --workspace
+
+      - name: Generate coverage report (llvm-cov)
+        working-directory: carbonledger/contracts
+        run: |
+          cargo install cargo-llvm-cov --locked --quiet 2>/dev/null || true
+          cargo llvm-cov --workspace --lcov --output-path lcov.info
+          cargo llvm-cov report --workspace --summary-only
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: carbonledger/contracts/lcov.info
+          flags: contracts
+          fail_ci_if_error: false
 
       - name: Build WASM artifacts
         working-directory: carbonledger/contracts

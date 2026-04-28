@@ -739,3 +739,221 @@ mod tests {
         assert_eq!(client.get_version(), 1);
     }
 }
+
+// ── Edge-case tests (issue #91) ───────────────────────────────────────────────
+
+#[cfg(test)]
+mod edge_case_tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, vec, Env, String};
+
+    fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
+
+    fn init(env: &Env) -> (CarbonRegistryContractClient, Address, Address, Address) {
+        env.mock_all_auths();
+        let admin    = Address::generate(env);
+        let oracle   = Address::generate(env);
+        let verifier = Address::generate(env);
+        let id = env.register_contract(None, CarbonRegistryContract);
+        let client = CarbonRegistryContractClient::new(env, &id);
+        client.initialize(&admin, &oracle, &vec![env, verifier.clone()]).unwrap();
+        (client, admin, oracle, verifier)
+    }
+
+    fn register_proj(env: &Env, client: &CarbonRegistryContractClient, admin: &Address, id: &str) {
+        client.register_project(
+            admin,
+            &s(env, id),
+            &s(env, "Test Project"),
+            &s(env, "QmCID"),
+            &Address::generate(env),
+            &s(env, "VCS"),
+            &s(env, "Brazil"),
+            &s(env, "forestry"),
+            &2023_u32,
+            &80_u32,
+        ).unwrap();
+    }
+
+    // ── ProjectNotFound ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_nonexistent_project_returns_not_found() {
+        let (env, _, _, _) = init(&Env::default());
+        let env = Env::default();
+        let (client, _, _, _) = init(&env);
+        let result = client.try_get_project(&s(&env, "does-not-exist"));
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ProjectNotFound));
+    }
+
+    #[test]
+    fn test_verify_nonexistent_project_returns_not_found() {
+        let env = Env::default();
+        let (client, _, _, verifier) = init(&env);
+        let result = client.try_verify_project(&verifier, &s(&env, "ghost"));
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ProjectNotFound));
+    }
+
+    #[test]
+    fn test_reject_nonexistent_project_returns_not_found() {
+        let env = Env::default();
+        let (client, _, _, verifier) = init(&env);
+        let result = client.try_reject_project(&verifier, &s(&env, "ghost"), &s(&env, "fraud"));
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ProjectNotFound));
+    }
+
+    #[test]
+    fn test_suspend_nonexistent_project_returns_not_found() {
+        let env = Env::default();
+        let (client, admin, _, _) = init(&env);
+        let result = client.try_suspend_project(&admin, &s(&env, "ghost"), &s(&env, "reason"));
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ProjectNotFound));
+    }
+
+    // ── ProjectAlreadyExists ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_register_duplicate_project_id_fails() {
+        let env = Env::default();
+        let (client, admin, _, _) = init(&env);
+        register_proj(&env, &client, &admin, "dup-proj");
+        let result = client.try_register_project(
+            &admin, &s(&env, "dup-proj"), &s(&env, "Dup"), &s(&env, "cid"),
+            &Address::generate(&env), &s(&env, "VCS"), &s(&env, "BR"), &s(&env, "forestry"),
+            &2023_u32, &80_u32,
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ProjectAlreadyExists));
+    }
+
+    // ── InvalidVintageYear ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_vintage_year_1989_rejected() {
+        let env = Env::default();
+        let (client, admin, _, _) = init(&env);
+        let result = client.try_register_project(
+            &admin, &s(&env, "p1"), &s(&env, "N"), &s(&env, "cid"),
+            &Address::generate(&env), &s(&env, "VCS"), &s(&env, "BR"), &s(&env, "forestry"),
+            &1989_u32, &80_u32,
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::InvalidVintageYear));
+    }
+
+    #[test]
+    fn test_vintage_year_1990_accepted() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin    = Address::generate(&env);
+        let oracle   = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        let id = env.register_contract(None, CarbonRegistryContract);
+        let client = CarbonRegistryContractClient::new(&env, &id);
+        client.initialize(&admin, &oracle, &vec![&env, verifier.clone()]).unwrap();
+        // Set ledger to 2026 so 1990 is within range
+        env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+            timestamp: 1767225600,
+            protocol_version: 20,
+            sequence_number: 1,
+            network_id: [0; 32],
+            base_reserve: 10,
+            min_temp_entry_ttl: 1,
+            min_persistent_entry_ttl: 1,
+            max_entry_ttl: 6_312_000,
+        });
+        client.register_project(
+            &admin, &s(&env, "p1990"), &s(&env, "N"), &s(&env, "cid"),
+            &Address::generate(&env), &s(&env, "VCS"), &s(&env, "BR"), &s(&env, "forestry"),
+            &1990_u32, &80_u32,
+        ).unwrap();
+    }
+
+    // ── MethodologyScoreLow ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_methodology_score_zero_rejected() {
+        let env = Env::default();
+        let (client, admin, _, _) = init(&env);
+        let result = client.try_register_project(
+            &admin, &s(&env, "p1"), &s(&env, "N"), &s(&env, "cid"),
+            &Address::generate(&env), &s(&env, "VCS"), &s(&env, "BR"), &s(&env, "forestry"),
+            &2023_u32, &0_u32,
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::MethodologyScoreLow));
+    }
+
+    #[test]
+    fn test_methodology_score_69_rejected() {
+        let env = Env::default();
+        let (client, admin, _, _) = init(&env);
+        let result = client.try_register_project(
+            &admin, &s(&env, "p1"), &s(&env, "N"), &s(&env, "cid"),
+            &Address::generate(&env), &s(&env, "VCS"), &s(&env, "BR"), &s(&env, "forestry"),
+            &2023_u32, &69_u32,
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::MethodologyScoreLow));
+    }
+
+    // ── UnauthorizedVerifier ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_non_verifier_cannot_verify_project() {
+        let env = Env::default();
+        let (client, admin, _, _) = init(&env);
+        register_proj(&env, &client, &admin, "p1");
+        let rogue = Address::generate(&env);
+        let result = client.try_verify_project(&rogue, &s(&env, "p1"));
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedVerifier));
+    }
+
+    #[test]
+    fn test_non_verifier_cannot_reject_project() {
+        let env = Env::default();
+        let (client, admin, _, _) = init(&env);
+        register_proj(&env, &client, &admin, "p1");
+        let rogue = Address::generate(&env);
+        let result = client.try_reject_project(&rogue, &s(&env, "p1"), &s(&env, "fraud"));
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedVerifier));
+    }
+
+    #[test]
+    fn test_non_admin_cannot_suspend_project() {
+        let env = Env::default();
+        let (client, admin, _, _) = init(&env);
+        register_proj(&env, &client, &admin, "p1");
+        let rogue = Address::generate(&env);
+        let result = client.try_suspend_project(&rogue, &s(&env, "p1"), &s(&env, "reason"));
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedVerifier));
+    }
+
+    // ── UnauthorizedOracle ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_non_oracle_cannot_update_project_status() {
+        let env = Env::default();
+        let (client, admin, _, _) = init(&env);
+        register_proj(&env, &client, &admin, "p1");
+        let rogue = Address::generate(&env);
+        let result = client.try_update_project_status(&rogue, &s(&env, "p1"), &ProjectStatus::Completed);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedOracle));
+    }
+
+    #[test]
+    fn test_non_oracle_cannot_increment_issued() {
+        let env = Env::default();
+        let (client, admin, _, _) = init(&env);
+        register_proj(&env, &client, &admin, "p1");
+        let rogue = Address::generate(&env);
+        let result = client.try_increment_issued(&rogue, &s(&env, "p1"), &100_i128);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedOracle));
+    }
+
+    // ── AlreadyInitialized ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_double_initialize_fails() {
+        let env = Env::default();
+        let (client, admin, oracle, verifier) = init(&env);
+        let result = client.try_initialize(&admin, &oracle, &vec![&env, verifier]);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::AlreadyInitialized));
+    }
+}

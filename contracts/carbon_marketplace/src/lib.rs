@@ -765,3 +765,203 @@ mod tests {
         assert_eq!(client.get_version(), 1);
     }
 }
+
+// ── Edge-case tests (issue #91) ───────────────────────────────────────────────
+
+#[cfg(test)]
+mod edge_case_tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Env, String};
+
+    fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
+
+    fn init(env: &Env) -> (CarbonMarketplaceContractClient, Address, Address) {
+        env.mock_all_auths();
+        let admin    = Address::generate(env);
+        let treasury = Address::generate(env);
+        let usdc     = env.register_stellar_asset_contract(admin.clone());
+        let credit   = Address::generate(env); // stub — no cross-contract calls in these tests
+        let id = env.register_contract(None, CarbonMarketplaceContract);
+        let client = CarbonMarketplaceContractClient::new(env, &id);
+        client.initialize(&admin, &usdc, &credit, &treasury).unwrap();
+        (client, admin, treasury)
+    }
+
+    fn add_listing(env: &Env, client: &CarbonMarketplaceContractClient, seller: &Address, listing_id: &str, project_id: &str) {
+        client.list_credits(
+            seller, &s(env, listing_id), &s(env, "batch-1"), &s(env, project_id),
+            &100_i128, &10_0000000_i128, &2023_u32, &s(env, "VCS"), &s(env, "Brazil"),
+        ).unwrap();
+    }
+
+    // ── ZeroAmountNotAllowed ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_list_zero_amount_fails() {
+        let env = Env::default();
+        let (client, _, _) = init(&env);
+        let seller = Address::generate(&env);
+        let result = client.try_list_credits(
+            &seller, &s(&env, "l1"), &s(&env, "b1"), &s(&env, "p1"),
+            &0_i128, &10_0000000_i128, &2023_u32, &s(&env, "VCS"), &s(&env, "BR"),
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ZeroAmountNotAllowed));
+    }
+
+    #[test]
+    fn test_list_zero_price_fails() {
+        let env = Env::default();
+        let (client, _, _) = init(&env);
+        let seller = Address::generate(&env);
+        let result = client.try_list_credits(
+            &seller, &s(&env, "l1"), &s(&env, "b1"), &s(&env, "p1"),
+            &100_i128, &0_i128, &2023_u32, &s(&env, "VCS"), &s(&env, "BR"),
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ZeroAmountNotAllowed));
+    }
+
+    #[test]
+    fn test_purchase_zero_amount_fails() {
+        let env = Env::default();
+        let (client, _, _) = init(&env);
+        let seller = Address::generate(&env);
+        add_listing(&env, &client, &seller, "l1", "p1");
+        let buyer = Address::generate(&env);
+        let result = client.try_purchase_credits(&buyer, &s(&env, "l1"), &0_i128);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ZeroAmountNotAllowed));
+    }
+
+    // ── InvalidVintageYear ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_list_vintage_1989_fails() {
+        let env = Env::default();
+        let (client, _, _) = init(&env);
+        let seller = Address::generate(&env);
+        let result = client.try_list_credits(
+            &seller, &s(&env, "l1"), &s(&env, "b1"), &s(&env, "p1"),
+            &100_i128, &10_0000000_i128, &1989_u32, &s(&env, "VCS"), &s(&env, "BR"),
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::InvalidVintageYear));
+    }
+
+    // ── ListingNotFound ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_purchase_nonexistent_listing_fails() {
+        let env = Env::default();
+        let (client, _, _) = init(&env);
+        let buyer = Address::generate(&env);
+        let result = client.try_purchase_credits(&buyer, &s(&env, "no-such"), &10_i128);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ListingNotFound));
+    }
+
+    #[test]
+    fn test_purchase_delisted_listing_fails() {
+        let env = Env::default();
+        let (client, _, _) = init(&env);
+        let seller = Address::generate(&env);
+        add_listing(&env, &client, &seller, "l1", "p1");
+        client.delist_credits(&seller, &s(&env, "l1")).unwrap();
+        let buyer = Address::generate(&env);
+        let result = client.try_purchase_credits(&buyer, &s(&env, "l1"), &10_i128);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ListingNotFound));
+    }
+
+    // ── InsufficientLiquidity ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_purchase_exceeds_available_fails() {
+        let env = Env::default();
+        let (client, _, _) = init(&env);
+        let seller = Address::generate(&env);
+        add_listing(&env, &client, &seller, "l1", "p1"); // 100 credits
+        let buyer = Address::generate(&env);
+        let result = client.try_purchase_credits(&buyer, &s(&env, "l1"), &101_i128);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::InsufficientLiquidity));
+    }
+
+    // ── ProjectSuspended ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_list_suspended_project_fails() {
+        let env = Env::default();
+        let (client, admin, _) = init(&env);
+        client.suspend_project(&admin, &s(&env, "p1")).unwrap();
+        let seller = Address::generate(&env);
+        let result = client.try_list_credits(
+            &seller, &s(&env, "l1"), &s(&env, "b1"), &s(&env, "p1"),
+            &100_i128, &10_0000000_i128, &2023_u32, &s(&env, "VCS"), &s(&env, "BR"),
+        );
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ProjectSuspended));
+    }
+
+    #[test]
+    fn test_purchase_suspended_project_fails() {
+        let env = Env::default();
+        let (client, admin, _) = init(&env);
+        let seller = Address::generate(&env);
+        add_listing(&env, &client, &seller, "l1", "p1");
+        client.suspend_project(&admin, &s(&env, "p1")).unwrap();
+        let buyer = Address::generate(&env);
+        let result = client.try_purchase_credits(&buyer, &s(&env, "l1"), &10_i128);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::ProjectSuspended));
+    }
+
+    // ── UnauthorizedVerifier (delist by non-seller, admin functions) ──────────
+
+    #[test]
+    fn test_non_seller_cannot_delist() {
+        let env = Env::default();
+        let (client, _, _) = init(&env);
+        let seller = Address::generate(&env);
+        add_listing(&env, &client, &seller, "l1", "p1");
+        let rogue = Address::generate(&env);
+        let result = client.try_delist_credits(&rogue, &s(&env, "l1"));
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedVerifier));
+    }
+
+    #[test]
+    fn test_non_admin_cannot_suspend_project() {
+        let env = Env::default();
+        let (client, _, _) = init(&env);
+        let rogue = Address::generate(&env);
+        let result = client.try_suspend_project(&rogue, &s(&env, "p1"));
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedVerifier));
+    }
+
+    #[test]
+    fn test_non_admin_cannot_update_treasury() {
+        let env = Env::default();
+        let (client, _, _) = init(&env);
+        let rogue        = Address::generate(&env);
+        let new_treasury = Address::generate(&env);
+        let result = client.try_update_treasury(&rogue, &new_treasury);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedVerifier));
+    }
+
+    // ── AlreadyInitialized ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_double_initialize_fails() {
+        let env = Env::default();
+        let (client, admin, treasury) = init(&env);
+        let usdc   = Address::generate(&env);
+        let credit = Address::generate(&env);
+        let result = client.try_initialize(&admin, &usdc, &credit, &treasury);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::AlreadyInitialized));
+    }
+
+    // ── InvalidSerialRange (bulk_purchase length mismatch) ────────────────────
+
+    #[test]
+    fn test_bulk_purchase_length_mismatch_fails() {
+        let env = Env::default();
+        let (client, _, _) = init(&env);
+        let buyer = Address::generate(&env);
+        let ids     = soroban_sdk::vec![&env, s(&env, "l1"), s(&env, "l2")];
+        let amounts = soroban_sdk::vec![&env, 10_i128]; // length mismatch
+        let result = client.try_bulk_purchase(&buyer, &ids, &amounts);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::InvalidSerialRange));
+    }
+}

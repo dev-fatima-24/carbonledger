@@ -100,6 +100,7 @@ export default function BuyPage() {
               Amount (tonnes CO₂e) — minimum 0.01 tCO₂e
             </label>
             <input
+              id="buy-amount"
               type="number"
               min={0.01}
               max={listing.amountAvailable}
@@ -118,15 +119,16 @@ export default function BuyPage() {
             />
             <div style={{ display: "flex", justifyContent: "space-between", marginTop: "0.75rem" }}>
               <span style={{ fontSize: "0.875rem", color: colors.neutral[500] }}>Total cost</span>
-              <span style={{ fontSize: "1.25rem", fontWeight: 800, color: colors.primary[700] }}>
+              <span id="buy-total-cost" style={{ fontSize: "1.25rem", fontWeight: 800, color: colors.primary[700] }}>
                 ${formatStroops(totalCost)} USDC
               </span>
             </div>
           </div>
 
           {/* Retire at checkout option */}
-          <label style={{ display: "flex", alignItems: "center", gap: "0.75rem", cursor: "pointer" }}>
+          <label htmlFor="buy-retire-after" style={{ display: "flex", alignItems: "center", gap: "0.75rem", cursor: "pointer" }}>
             <input
+              id="buy-retire-after"
               type="checkbox"
               checked={retireAfter}
               onChange={e => setRetireAfter(e.target.checked)}
@@ -145,6 +147,7 @@ export default function BuyPage() {
           {/* CTA */}
           {!walletKey ? (
             <button
+              type="button"
               onClick={handleConnect}
               style={{
                 background: colors.primary[600], color: "#fff",
@@ -156,8 +159,10 @@ export default function BuyPage() {
             </button>
           ) : (
             <button
+              type="button"
               onClick={handlePurchase}
               disabled={txStatus === "submitted" || txStatus === "pending"}
+              aria-disabled={txStatus === "submitted" || txStatus === "pending"}
               style={{
                 background: txStatus === "confirmed" ? colors.neutral[300] : colors.primary[600],
                 color: "#fff", border: "none", borderRadius: "0.5rem",

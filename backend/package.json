@@ -7,7 +7,26 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
-    "test": "jest --passWithNoTests"
+    "test": "jest --passWithNoTests",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage",
+    "test:e2e": "jest --config ./test/jest-e2e.json --runInBand",
+    "test:e2e:watch": "jest --config ./test/jest-e2e.json --watch --runInBand",
+    "test:db:up": "docker-compose -f docker-compose.test.yml up -d",
+    "test:db:down": "docker-compose -f docker-compose.test.yml down -v",
+    "test:db:migrate": "dotenv -e .env.test -- prisma migrate deploy",
+    "test:db:reset": "dotenv -e .env.test -- prisma migrate reset --force",
+    "pretest:e2e": "npm run test:db:up && npm run test:db:migrate"
+  },
+  "jest": {
+    "moduleFileExtensions": ["js", "json", "ts"],
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": { "^.+\\.(t|j)s$": "ts-jest" },
+    "setupFiles": ["<rootDir>/jest.setup.ts"],
+    "collectCoverageFrom": ["**/*.(t|j)s"],
+    "coverageDirectory": "../coverage",
+    "testEnvironment": "node"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.4",
@@ -31,24 +50,6 @@
     "pdfkit": "^0.18.0",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.1"
-  },
-  "jest": {
-    "moduleFileExtensions": [
-      "js",
-      "json",
-      "ts"
-    ],
-    "rootDir": "src",
-    "testRegex": ".*\\.spec\\.ts$",
-    "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
-    },
-    "setupFiles": ["<rootDir>/jest.setup.ts"],
-    "collectCoverageFrom": [
-      "**/*.(t|j)s"
-    ],
-    "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.0.0",
