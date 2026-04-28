@@ -9,6 +9,7 @@ import { getWalletErrorMessage } from "../../lib/wallet-errors";
 import { colors } from "../../styles/design-system";
 import TransactionStatus, { TxStatus } from "../../components/TransactionStatus";
 import Toast, { useToast } from "../../components/Toast";
+import ErrorBoundary from "../../components/ErrorBoundary";
 
 export default function RetirePage() {
   const searchParams = useSearchParams();
@@ -69,6 +70,7 @@ export default function RetirePage() {
   const isDisabled = !beneficiary || !reason || txStatus === "submitted" || txStatus === "confirmed";
 
   return (
+    <ErrorBoundary>
     <div style={{ maxWidth: "600px", margin: "0 auto", padding: "2.5rem 2rem" }}>
       <h1 style={{ fontSize: "2rem", fontWeight: 800, color: colors.neutral[900], margin: "0 0 0.5rem" }}>
         Retire Carbon Credits
@@ -189,5 +191,6 @@ export default function RetirePage() {
 
       <Toast toasts={toasts} onDismiss={dismiss} />
     </div>
+    </ErrorBoundary>
   );
 }

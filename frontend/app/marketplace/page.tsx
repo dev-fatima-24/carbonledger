@@ -9,6 +9,7 @@ import { colors } from "../../styles/design-system";
 import MarketplaceFilter, { FilterState } from "../../components/MarketplaceFilter";
 import LoadingSkeleton from "../../components/LoadingSkeleton";
 import Toast, { useToast } from "../../components/Toast";
+import ErrorBoundary from "../../components/ErrorBoundary";
 
 export default function MarketplacePage() {
   const searchParams = useSearchParams();
@@ -41,6 +42,7 @@ export default function MarketplacePage() {
   const cartCount = items.length;
 
   return (
+    <ErrorBoundary>
     <div style={{ maxWidth: "1100px", margin: "0 auto", padding: "2.5rem 2rem" }}>
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
@@ -141,6 +143,7 @@ export default function MarketplacePage() {
 
       <Toast toasts={toasts} onDismiss={dismiss} />
     </div>
+    </ErrorBoundary>
   );
 }
 
