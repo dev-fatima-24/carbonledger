@@ -28,6 +28,16 @@ export class CreditsService {
     const existing = await this.prisma.creditBatch.findUnique({ where: { batchId: dto.batchId } });
     if (existing) throw new BadRequestException(`Batch ${dto.batchId} already exists`);
 
+    if (!/^[0-9]+$/.test(dto.serialStart) || !/^[0-9]+$/.test(dto.serialEnd)) {
+      throw new BadRequestException("serialStart and serialEnd must be positive integer strings");
+    }
+
+    const serialStartUnits = BigInt(dto.serialStart);
+    const serialEndUnits = BigInt(dto.serialEnd);
+    if (serialStartUnits <= 0n || serialEndUnits <= 0n || serialEndUnits <= serialStartUnits) {
+      throw new BadRequestException("serialEnd must be greater than serialStart and both must be positive");
+    }
+
     // Check serial range overlap (prevents double counting)
     const overlap = await this.prisma.creditBatch.findFirst({
       where: {

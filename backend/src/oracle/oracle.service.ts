@@ -4,7 +4,7 @@ import { Queue } from 'bullmq';
 import { PrismaService } from '../prisma.service';
 import { QUEUE_NAME, JobType } from '../queue/queue.constants';
 import {
-  IsString, IsInt, IsPositive, Min, Max, Length, Matches, IsNumber,
+    IsString, IsInt, IsPositive, Min, Max, Length, Matches, IsNumber, MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -17,25 +17,24 @@ export class SubmitMonitoringDto {
   @IsInt() @Min(0) @Max(100) @Type(() => Number) methodologyScore: number;
   @IsString() @Matches(CID_REGEX, { message: 'satelliteCid must be a valid IPFS CID' })
   satelliteCid: string;
-  @IsString() submittedBy: string;
+  @IsString() @Length(1, 64) @MaxLength(64) submittedBy: string;
 }
 
 export class UpdatePriceDto {
   @IsString() @Length(1, 64) methodology: string;
-  @IsInt() @Min(1990) @Max(2027) @Type(() => Number) vintageYear: number;
-  @IsString() priceUsdc: string;
+  @IsInt() @Min(1990) @Max(new Date().getFullYear() + 1) @Type(() => Number) vintageYear: number;
+  @IsString() @Length(1, 32) priceUsdc: string;
 }
 
 export class FlagProjectDto {
   @IsString() @Length(1, 64) projectId: string;
-  @IsString() reason: string;
+  @IsString() @MaxLength(128) reason: string;
 }
 
 export class HoldPriceUpdateDto {
-  @IsString() methodology: string;
+  @IsString() @Length(1, 64) methodology: string;
   @IsInt() @Type(() => Number) vintageYear: number;
-  @IsString() priceStroops: string;
-  @IsNumber() @Type(() => Number) deviation: number;
+  @IsString() @Length(1, 32) priceStroops: string;
 }
 
 @Injectable()
