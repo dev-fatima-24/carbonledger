@@ -31,9 +31,10 @@ pub enum CarbonError {
     ZeroAmountNotAllowed   = 16,
     ProjectAlreadyExists   = 17,
     InvalidSerialRange     = 18,
-    AlreadyInitialized     = 19,
-    Arithmetic             = 20,
-    UnauthorizedUpgrade    = 21,
+    BatchTooLarge         = 19,
+    AlreadyInitialized     = 20,
+    Arithmetic             = 21,
+    UnauthorizedUpgrade    = 22,
 }
 
 pub const MAX_BATCH_SIZE: i128 = 1_000_000_000;
@@ -243,7 +244,7 @@ impl CarbonCreditContract {
         if amount > MAX_BATCH_SIZE {
             return Err(CarbonError::BatchTooLarge);
         }
-        if serial_end <= serial_start {
+        if serial_start == 0 || serial_end <= serial_start {
             return Err(CarbonError::InvalidSerialRange);
         }
 
@@ -651,6 +652,16 @@ mod tests {
         client.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner);
         let result = client.try_mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b2"), &50_u64, &150_u64, &s(&env, "cid"), &owner);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_zero_serial_start_fails() {
+        let env = Env::default();
+        let (client, admin, _) = setup(&env);
+        let owner = Address::generate(&env);
+
+        let result = client.try_mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &0_u64, &100_u64, &s(&env, "cid"), &owner);
+        assert_eq!(result.unwrap_err(), Ok(CarbonError::InvalidSerialRange));
     }
 
     #[test]
