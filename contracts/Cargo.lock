@@ -138,6 +138,7 @@ name = "carbon_marketplace"
 version = "0.1.0"
 dependencies = [
  "carbon_credit",
+ "proptest",
  "soroban-sdk",
 ]
 

@@ -231,10 +231,10 @@ impl CarbonCreditContract {
         if project_id.is_empty() || project_id.chars().count() > 64 {
             return Err(CarbonError::ProjectNotFound);
         }
-        if batch_id.is_empty() || batch_id.chars().count() > 64 {
+        if batch_id.len() == 0 || batch_id.len() > 64 {
             return Err(CarbonError::ProjectNotFound);
         }
-        if metadata_cid.is_empty() || metadata_cid.chars().count() > 128 {
+        if metadata_cid.len() == 0 || metadata_cid.len() > 128 {
             return Err(CarbonError::ProjectNotFound);
         }
 
@@ -533,20 +533,36 @@ impl CarbonCreditContract {
     }
 }
 
+// ── Invariant tests ───────────────────────────────────────────────────────────
+#[cfg(test)]
+mod invariants;
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env, String};
+    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Env, String};
 
     fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
 
     fn setup(env: &Env) -> (CarbonCreditContractClient, Address, Address) {
         env.mock_all_auths();
+        env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+            timestamp: 1735689600, // 2025-01-01
+            protocol_version: 20,
+            sequence_number: 1,
+            network_id: [0; 32],
+            base_reserve: 10,
+            min_temp_entry_ttl: 1,
+            min_persistent_entry_ttl: 1,
+            max_entry_ttl: 518400,
+        });
         let admin = Address::generate(&env);
         let registry = Address::generate(&env);
         let id = env.register_contract(None, CarbonCreditContract);
         let client = CarbonCreditContractClient::new(&env, &id);
-        client.initialize(&admin, &registry).unwrap();
+        client.initialize(&admin, &registry);
         (client, admin, registry)
     }
 
@@ -692,7 +708,7 @@ mod tests {
             &s(&env, "ret-001"),
             &s(&env, "txhash123"),
             &s(&env, "QmCertificateCID"),
-        ).unwrap();
+        );
 
         assert_eq!(cert.amount, 100);
         let batch = client.get_credit_batch(&s(&env, "b1"));
@@ -705,8 +721,8 @@ mod tests {
         let (client, admin, _) = setup(&env);
         let owner = Address::generate(&env);
 
-        client.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner).unwrap();
-        client.retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx"), &s(&env, "QmCID")).unwrap();
+        client.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner);
+        client.retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx"), &s(&env, "QmCID"));
 
         let to = Address::generate(&env);
         let result = client.try_transfer_credits(&owner, &to, &s(&env, "b1"), &10_i128);
@@ -719,8 +735,8 @@ mod tests {
         let (client, admin, _) = setup(&env);
         let owner = Address::generate(&env);
 
-        client.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner).unwrap();
-        client.retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx"), &s(&env, "QmCID")).unwrap();
+        client.mint_credits(&admin, &s(&env, "p1"), &100_i128, &2023_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner);
+        client.retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-001"), &s(&env, "tx"), &s(&env, "QmCID"));
 
         let result = client.try_retire_credits(&owner, &s(&env, "b1"), &100_i128, &s(&env, "reason"), &s(&env, "Corp"), &s(&env, "ret-002"), &s(&env, "tx2"), &s(&env, "QmCID2"));
         assert!(result.is_err());
@@ -733,8 +749,8 @@ mod tests {
         let owner = Address::generate(&env);
         mint_batch(&env, &client, &admin, &owner);
 
-        client.retire_credits(&owner, &s(&env, "batch-001"), &500_i128, &s(&env, "partial"), &s(&env, "me"), &s(&env, "ret-001"), &s(&env, "tx")).unwrap();
-        let batch = client.get_credit_batch(&s(&env, "batch-001")).unwrap();
+        client.retire_credits(&owner, &s(&env, "batch-001"), &500_i128, &s(&env, "partial"), &s(&env, "me"), &s(&env, "ret-001"), &s(&env, "tx"), &s(&env, "QmCID"));
+        let batch = client.get_credit_batch(&s(&env, "batch-001"));
         assert_eq!(batch.status, CreditStatus::PartiallyRetired);
     }
 
@@ -762,11 +778,14 @@ mod tests {
             sequence_number: 1,
             network_id: [0; 32],
             base_reserve: 10,
+            min_temp_entry_ttl: 1,
+            min_persistent_entry_ttl: 1,
+            max_entry_ttl: 518400,
         });
 
         client.mint_credits(
             &admin, &s(&env, "p1"), &100_i128, &1990_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner
-        ).unwrap();
+        );
     }
 
     #[test]
@@ -781,11 +800,14 @@ mod tests {
             sequence_number: 1,
             network_id: [0; 32],
             base_reserve: 10,
+            min_temp_entry_ttl: 1,
+            min_persistent_entry_ttl: 1,
+            max_entry_ttl: 518400,
         });
 
         client.mint_credits(
             &admin, &s(&env, "p1"), &100_i128, &2027_u32, &s(&env, "b1"), &1_u64, &100_u64, &s(&env, "cid"), &owner
-        ).unwrap();
+        );
     }
 
     #[test]
@@ -800,6 +822,9 @@ mod tests {
             sequence_number: 1,
             network_id: [0; 32],
             base_reserve: 10,
+            min_temp_entry_ttl: 1,
+            min_persistent_entry_ttl: 1,
+            max_entry_ttl: 518400,
         });
 
         let result = client.try_mint_credits(
@@ -990,3 +1015,4 @@ mod tests {
         assert_eq!(final_batch.status, CreditStatus::FullyRetired);
     }
 }
+

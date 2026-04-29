@@ -349,6 +349,16 @@ mod tests {
 
     fn setup(env: &Env) -> (CarbonOracleContractClient, Address, Address) {
         env.mock_all_auths();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1735689600, // 2025-01-01
+            protocol_version: 20,
+            sequence_number: 1,
+            network_id: [0; 32],
+            base_reserve: 10,
+            min_temp_entry_ttl: 1,
+            min_persistent_entry_ttl: 1,
+            max_entry_ttl: 518400,
+        });
         let admin  = Address::generate(env);
         let oracle = Address::generate(env);
         let id     = env.register_contract(None, CarbonOracleContract);
@@ -428,7 +438,7 @@ mod tests {
             &1000_i128,
             &80_u32,
             &s(&env, "QmCID"),
-        ).unwrap();
+        );
     }
 
     #[test]
