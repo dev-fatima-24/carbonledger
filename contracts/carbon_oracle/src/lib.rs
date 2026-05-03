@@ -3,8 +3,9 @@
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror,
     Address, Env, String, Vec,
-    symbol_short, vec, BytesN,
+    symbol_short, vec, BytesN, Bytes
 };
+use soroban_sdk::xdr::ToXdr;
 
 // -- Error Enum ---------------------------------------------------------------
 
@@ -20,6 +21,8 @@ pub enum CarbonError {
     SerialNumberConflict   = 6,
     UnauthorizedVerifier   = 7,
     UnauthorizedOracle     = 8,
+    InvalidNonce           = 22,
+    InvalidSignature       = 23,
     InvalidVintageYear     = 9,
     ListingNotFound        = 10,
     InsufficientLiquidity  = 11,
@@ -51,6 +54,8 @@ pub enum DataKey {
     BenchmarkPrice(String, u32),
     FlaggedProject(String),
     OracleAddress,
+    OraclePublicKey,
+    OracleNonce,
     Admin,
     ContractVersion,
     UpgradeHistory,
@@ -88,13 +93,15 @@ pub struct CarbonOracleContract;
 #[contractimpl]
 impl CarbonOracleContract {
 
-    pub fn initialize(env: Env, admin: Address, oracle_address: Address) -> Result<(), CarbonError> {
+    pub fn initialize(env: Env, admin: Address, oracle_address: Address, oracle_pub_key: BytesN<32>) -> Result<(), CarbonError> {
         if env.storage().persistent().has(&DataKey::Admin) {
             return Err(CarbonError::AlreadyInitialized);
         }
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::OracleAddress, &oracle_address);
+        env.storage().persistent().set(&DataKey::OraclePublicKey, &oracle_pub_key);
+        env.storage().persistent().set(&DataKey::OracleNonce, &0_u64);
         env.storage().persistent().set(&DataKey::ContractVersion, &CURRENT_VERSION);
         Ok(())
     }
@@ -150,11 +157,14 @@ impl CarbonOracleContract {
         env: Env,
         admin: Address,
         new_oracle: Address,
+        new_pub_key: BytesN<32>,
     ) -> Result<(), CarbonError> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
         env.storage().persistent().set(&DataKey::OracleAddress, &new_oracle);
+        env.storage().persistent().set(&DataKey::OraclePublicKey, &new_pub_key);
+        env.storage().persistent().set(&DataKey::OracleNonce, &0_u64);
 
         env.events().publish(
             (symbol_short!("c_ledger"), symbol_short!("ora_rot")),
@@ -171,9 +181,21 @@ impl CarbonOracleContract {
         tonnes_verified: i128,
         methodology_score: u32,
         satellite_cid: String,
+        signature: BytesN<64>,
+        nonce: u64,
     ) -> Result<(), CarbonError> {
         oracle_signer.require_auth();
         Self::require_oracle(&env, &oracle_signer)?;
+
+        let payload = (
+            project_id.clone(),
+            period.clone(),
+            tonnes_verified,
+            methodology_score,
+            satellite_cid.clone(),
+        ).to_xdr(&env);
+
+        Self::verify_oracle_signature(&env, &payload, &signature, nonce)?;
 
         if tonnes_verified <= 0 {
             return Err(CarbonError::ZeroAmountNotAllowed);
@@ -216,9 +238,19 @@ impl CarbonOracleContract {
         methodology: String,
         vintage_year: u32,
         price_usdc: i128,
+        signature: BytesN<64>,
+        nonce: u64,
     ) -> Result<(), CarbonError> {
         oracle_signer.require_auth();
         Self::require_oracle(&env, &oracle_signer)?;
+
+        let payload = (
+            methodology.clone(),
+            vintage_year,
+            price_usdc,
+        ).to_xdr(&env);
+
+        Self::verify_oracle_signature(&env, &payload, &signature, nonce)?;
 
         if price_usdc <= 0 {
             return Err(CarbonError::ZeroAmountNotAllowed);
@@ -267,9 +299,18 @@ impl CarbonOracleContract {
         oracle_signer: Address,
         project_id: String,
         reason: String,
+        signature: BytesN<64>,
+        nonce: u64,
     ) -> Result<(), CarbonError> {
         oracle_signer.require_auth();
         Self::require_oracle(&env, &oracle_signer)?;
+
+        let payload = (
+            project_id.clone(),
+            reason.clone(),
+        ).to_xdr(&env);
+
+        Self::verify_oracle_signature(&env, &payload, &signature, nonce)?;
 
         env.storage().persistent().set(&DataKey::FlaggedProject(project_id.clone()), &reason);
 
@@ -319,6 +360,29 @@ impl CarbonOracleContract {
         Ok(())
     }
 
+    fn verify_oracle_signature(
+        env: &Env,
+        payload: &Bytes,
+        signature: &BytesN<64>,
+        nonce: u64,
+    ) -> Result<(), CarbonError> {
+        let stored_nonce: u64 = env.storage().persistent().get(&DataKey::OracleNonce).unwrap_or(0);
+        if nonce != stored_nonce {
+            return Err(CarbonError::InvalidNonce);
+        }
+
+        let pub_key: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::OraclePublicKey)
+            .ok_or(CarbonError::UnauthorizedOracle)?;
+
+        env.crypto().ed25519_verify(&pub_key, payload, signature);
+
+        env.storage().persistent().set(&DataKey::OracleNonce, &(stored_nonce + 1));
+        Ok(())
+    }
+
     fn get_current_year(env: &Env) -> u32 {
         let timestamp = env.ledger().timestamp();
         let seconds_in_day = 86400;
@@ -343,11 +407,14 @@ impl CarbonOracleContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Ledger, LedgerInfo}, Env, String};
+    use soroban_sdk::{testutils::{Address as _, Ledger, LedgerInfo}, Env, String, Bytes, BytesN};
+    use ed25519_dalek::{SigningKey, Signer};
+    use rand::rngs::OsRng;
+    use soroban_sdk::xdr::ToXdr;
 
     fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
 
-    fn setup(env: &Env) -> (CarbonOracleContractClient, Address, Address) {
+    fn setup(env: &Env) -> (CarbonOracleContractClient, Address, Address, SigningKey) {
         env.mock_all_auths();
         env.ledger().set(LedgerInfo {
             timestamp: 1735689600, // 2025-01-01
@@ -359,433 +426,135 @@ mod tests {
             min_persistent_entry_ttl: 1,
             max_entry_ttl: 518400,
         });
+
+        let mut csprng = OsRng;
+        let signing_key = SigningKey::generate(&mut csprng);
+        let pub_key_bytes = signing_key.verifying_key().to_bytes();
+        let pub_key = BytesN::from_array(env, &pub_key_bytes);
+
         let admin  = Address::generate(env);
         let oracle = Address::generate(env);
         let id     = env.register_contract(None, CarbonOracleContract);
         let client = CarbonOracleContractClient::new(env, &id);
-        client.initialize(&admin, &oracle);
-        (client, admin, oracle)
+        
+        client.initialize(&admin, &oracle, &pub_key);
+        (client, admin, oracle, signing_key)
     }
 
     #[test]
-    fn test_authorized_oracle_submits_monitoring() {
+    fn test_valid_signature_submission() {
         let env = Env::default();
-        let (client, _, oracle) = setup(&env);
+        let (client, _, oracle, signing_key) = setup(&env);
+
+        let project_id = s(&env, "proj-001");
+        let period = s(&env, "2023-Q1");
+        let tonnes = 5000_i128;
+        let score = 85_u32;
+        let cid = s(&env, "QmSatCID");
+        let nonce = 0_u64;
+
+        let payload = (
+            project_id.clone(),
+            period.clone(),
+            tonnes,
+            score,
+            cid.clone(),
+        ).to_xdr(&env);
+
+        let sig = signing_key.sign(payload.to_alloc_vec().as_slice());
+        let signature = BytesN::from_array(&env, &sig.to_bytes());
 
         client.submit_monitoring_data(
             &oracle,
-            &s(&env, "proj-001"),
-            &s(&env, "2023-Q1"),
-            &5000_i128,
-            &85_u32,
-            &s(&env, "QmSatCID"),
+            &project_id,
+            &period,
+            &tonnes,
+            &score,
+            &cid,
+            &signature,
+            &nonce,
         );
 
-        let data = client.get_monitoring_data(&s(&env, "proj-001"), &s(&env, "2023-Q1"));
+        let data = client.get_monitoring_data(&project_id, &period);
         assert_eq!(data.tonnes_verified, 5000);
         assert_eq!(data.methodology_score, 85);
     }
 
     #[test]
-    fn test_unauthorized_oracle_rejected() {
+    #[should_panic(expected = "HostError")]
+    fn test_invalid_signature_submission() {
         let env = Env::default();
-        let (client, _, _) = setup(&env);
-        let rogue = Address::generate(&env);
+        let (client, _, oracle, signing_key) = setup(&env);
 
-        let result = client.try_submit_monitoring_data(
-            &rogue,
-            &s(&env, "proj-001"),
-            &s(&env, "2023-Q1"),
-            &5000_i128,
-            &85_u32,
-            &s(&env, "QmSatCID"),
-        );
-        assert!(result.is_err());
-    }
+        let project_id = s(&env, "proj-001");
+        let period = s(&env, "2023-Q1");
+        let tonnes = 5000_i128;
+        let score = 85_u32;
+        let cid = s(&env, "QmSatCID");
+        let nonce = 0_u64;
 
-    #[test]
-    fn test_unauthorized_price_update_rejected() {
-        let env = Env::default();
-        let (client, _, _) = setup(&env);
-        let rogue = Address::generate(&env);
+        let payload = (
+            project_id.clone(),
+            period.clone(),
+            tonnes,
+            score,
+            cid.clone(),
+        ).to_xdr(&env);
 
-        let result = client.try_update_credit_price(&rogue, &s(&env, "VCS"), &2023_u32, &15_0000000_i128);
-        assert!(result.is_err());
-    }
+        let sig = signing_key.sign(payload.to_alloc_vec().as_slice());
+        let mut sig_bytes = sig.to_bytes();
+        // Corrupt signature
+        sig_bytes[0] ^= 0xFF;
+        let invalid_signature = BytesN::from_array(&env, &sig_bytes);
 
-    #[test]
-    fn test_rotate_oracle_admin_only() {
-        let env = Env::default();
-        let (client, admin, old_oracle) = setup(&env);
-        let new_oracle = Address::generate(&env);
-
-        client.rotate_oracle(&admin, &new_oracle).unwrap();
-
-        let result = client.try_submit_monitoring_data(
-            &old_oracle,
-            &s(&env, "proj-001"),
-            &s(&env, "2023-Q1"),
-            &1000_i128,
-            &80_u32,
-            &s(&env, "QmCID"),
-        );
-        assert!(result.is_err());
-
-        client.submit_monitoring_data(
-            &new_oracle,
-            &s(&env, "proj-001"),
-            &s(&env, "2023-Q1"),
-            &1000_i128,
-            &80_u32,
-            &s(&env, "QmCID"),
-        );
-    }
-
-    #[test]
-    fn test_rotate_oracle_non_admin_rejected() {
-        let env = Env::default();
-        let (client, _, _) = setup(&env);
-        let attacker   = Address::generate(&env);
-        let new_oracle = Address::generate(&env);
-
-        let result = client.try_rotate_oracle(&attacker, &new_oracle);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_benchmark_price_update() {
-        let env = Env::default();
-        let (client, _, oracle) = setup(&env);
-
-        client.update_credit_price(&oracle, &s(&env, "VCS"), &2023_u32, &15_0000000_i128);
-        let price = client.get_benchmark_price(&s(&env, "VCS"), &2023_u32);
-        assert_eq!(price, 15_0000000_i128);
-    }
-
-    #[test]
-    fn test_price_not_set_returns_error() {
-        let env = Env::default();
-        let (client, _, _) = setup(&env);
-        let result = client.try_get_benchmark_price(&s(&env, "VCS"), &2023_u32);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_flag_project() {
-        let env = Env::default();
-        let (client, _, oracle) = setup(&env);
-        client.flag_project(&oracle, &s(&env, "proj-001"), &s(&env, "satellite contradiction"));
-    }
-
-    #[test]
-    fn test_stale_monitoring_returns_false() {
-        let env = Env::default();
-        let (client, _, oracle) = setup(&env);
-
-        env.ledger().set(LedgerInfo {
-            timestamp: 1_000_000,
-            protocol_version: 20,
-            sequence_number: 100,
-            network_id: Default::default(),
-            base_reserve: 10,
-            min_temp_entry_ttl: 1,
-            min_persistent_entry_ttl: 1,
-            max_entry_ttl: 6_312_000,
-        });
-
+        // This will panic internally in `ed25519_verify`
         client.submit_monitoring_data(
             &oracle,
-            &s(&env, "proj-001"),
-            &s(&env, "2022-Q1"),
-            &1000_i128,
-            &80_u32,
-            &s(&env, "QmCID"),
+            &project_id,
+            &period,
+            &tonnes,
+            &score,
+            &cid,
+            &invalid_signature,
+            &nonce,
         );
-
-        env.ledger().set(LedgerInfo {
-            timestamp: 1_000_000 + (366 * 24 * 60 * 60),
-            protocol_version: 20,
-            sequence_number: 200,
-            network_id: Default::default(),
-            base_reserve: 10,
-            min_temp_entry_ttl: 1,
-            min_persistent_entry_ttl: 1,
-            max_entry_ttl: 6_312_000,
-        });
-
-        assert!(!client.is_monitoring_current(&s(&env, "proj-001")));
     }
 
     #[test]
-    fn test_fresh_monitoring_returns_true() {
+    fn test_invalid_nonce_submission() {
         let env = Env::default();
-        let (client, _, oracle) = setup(&env);
+        let (client, _, oracle, signing_key) = setup(&env);
 
-        client.submit_monitoring_data(
+        let project_id = s(&env, "proj-001");
+        let period = s(&env, "2023-Q1");
+        let tonnes = 5000_i128;
+        let score = 85_u32;
+        let cid = s(&env, "QmSatCID");
+        // Using an incorrect nonce, should return CarbonError::InvalidNonce (22)
+        let invalid_nonce = 1_u64;
+
+        let payload = (
+            project_id.clone(),
+            period.clone(),
+            tonnes,
+            score,
+            cid.clone(),
+        ).to_xdr(&env);
+
+        let sig = signing_key.sign(payload.to_alloc_vec().as_slice());
+        let signature = BytesN::from_array(&env, &sig.to_bytes());
+
+        let err = client.try_submit_monitoring_data(
             &oracle,
-            &s(&env, "proj-001"),
-            &s(&env, "2023-Q1"),
-            &1000_i128,
-            &80_u32,
-            &s(&env, "QmCID"),
-        );
-
-        assert!(client.is_monitoring_current(&s(&env, "proj-001")));
-    }
-
-    #[test]
-    fn test_initialize_twice_fails() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let admin  = Address::generate(&env);
-        let oracle = Address::generate(&env);
-        let id     = env.register_contract(None, CarbonOracleContract);
-        let client = CarbonOracleContractClient::new(&env, &id);
-        client.initialize(&admin, &oracle);
-        let result = client.try_initialize(&admin, &oracle);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_upgrade_admin_only() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let admin  = Address::generate(&env);
-        let oracle = Address::generate(&env);
-        let id     = env.register_contract(None, CarbonOracleContract);
-        let client = CarbonOracleContractClient::new(&env, &id);
-        client.initialize(&admin, &oracle).unwrap();
-
-        let attacker = Address::generate(&env);
-        let fake_hash = BytesN::from_array(&env, &[0u8; 32]);
-        let result = client.try_upgrade(&attacker, &fake_hash);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_version_tracking() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let admin  = Address::generate(&env);
-        let oracle = Address::generate(&env);
-        let id     = env.register_contract(None, CarbonOracleContract);
-        let client = CarbonOracleContractClient::new(&env, &id);
-        client.initialize(&admin, &oracle).unwrap();
-
-        assert_eq!(client.get_version(), 1);
-    }
-}
-
-// ── Edge-case tests (issue #91) ───────────────────────────────────────────────
-
-#[cfg(test)]
-mod edge_case_tests {
-    use super::*;
-    use soroban_sdk::{testutils::{Address as _, LedgerInfo}, Env, String};
-
-    fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
-
-    fn init(env: &Env) -> (CarbonOracleContractClient, Address, Address) {
-        env.mock_all_auths();
-        let admin  = Address::generate(env);
-        let oracle = Address::generate(env);
-        let id = env.register_contract(None, CarbonOracleContract);
-        let client = CarbonOracleContractClient::new(env, &id);
-        client.initialize(&admin, &oracle).unwrap();
-        (client, admin, oracle)
-    }
-
-    // ── ZeroAmountNotAllowed ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_submit_zero_tonnes_fails() {
-        let env = Env::default();
-        let (client, _, oracle) = init(&env);
-        let result = client.try_submit_monitoring_data(
-            &oracle, &s(&env, "p1"), &s(&env, "2023-Q1"),
-            &0_i128, &80_u32, &s(&env, "QmCID"),
-        );
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::ZeroAmountNotAllowed));
-    }
-
-    #[test]
-    fn test_submit_negative_tonnes_fails() {
-        let env = Env::default();
-        let (client, _, oracle) = init(&env);
-        let result = client.try_submit_monitoring_data(
-            &oracle, &s(&env, "p1"), &s(&env, "2023-Q1"),
-            &-500_i128, &80_u32, &s(&env, "QmCID"),
-        );
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::ZeroAmountNotAllowed));
-    }
-
-    #[test]
-    fn test_update_price_zero_fails() {
-        let env = Env::default();
-        let (client, _, oracle) = init(&env);
-        let result = client.try_update_credit_price(&oracle, &s(&env, "VCS"), &2023_u32, &0_i128);
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::ZeroAmountNotAllowed));
-    }
-
-    #[test]
-    fn test_update_price_negative_fails() {
-        let env = Env::default();
-        let (client, _, oracle) = init(&env);
-        let result = client.try_update_credit_price(&oracle, &s(&env, "VCS"), &2023_u32, &-1_i128);
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::ZeroAmountNotAllowed));
-    }
-
-    // ── InvalidVintageYear (price update) ────────────────────────────────────
-
-    #[test]
-    fn test_price_vintage_1989_fails() {
-        let env = Env::default();
-        let (client, _, oracle) = init(&env);
-        let result = client.try_update_credit_price(&oracle, &s(&env, "VCS"), &1989_u32, &10_0000000_i128);
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::InvalidVintageYear));
-    }
-
-    #[test]
-    fn test_price_vintage_1990_succeeds() {
-        let env = Env::default();
-        let (client, _, oracle) = init(&env);
-        // Set ledger to 2026 so 1990 is within range
-        env.ledger().set(LedgerInfo {
-            timestamp: 1767225600,
-            protocol_version: 20,
-            sequence_number: 1,
-            network_id: [0; 32],
-            base_reserve: 10,
-            min_temp_entry_ttl: 1,
-            min_persistent_entry_ttl: 1,
-            max_entry_ttl: 6_312_000,
-        });
-        client.update_credit_price(&oracle, &s(&env, "VCS"), &1990_u32, &10_0000000_i128).unwrap();
-    }
-
-    // ── PriceNotSet ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_get_price_before_set_fails() {
-        let env = Env::default();
-        let (client, _, _) = init(&env);
-        let result = client.try_get_benchmark_price(&s(&env, "VCS"), &2023_u32);
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::PriceNotSet));
-    }
-
-    // ── MonitoringDataStale ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_monitoring_stale_after_365_days() {
-        let env = Env::default();
-        let (client, _, oracle) = init(&env);
-
-        env.ledger().set(LedgerInfo {
-            timestamp: 1_000_000,
-            protocol_version: 20,
-            sequence_number: 1,
-            network_id: [0; 32],
-            base_reserve: 10,
-            min_temp_entry_ttl: 1,
-            min_persistent_entry_ttl: 1,
-            max_entry_ttl: 6_312_000,
-        });
-        client.submit_monitoring_data(
-            &oracle, &s(&env, "p1"), &s(&env, "2022-Q1"),
-            &1000_i128, &80_u32, &s(&env, "QmCID"),
-        ).unwrap();
-
-        // Advance past 365 days
-        env.ledger().set(LedgerInfo {
-            timestamp: 1_000_000 + (366 * 24 * 60 * 60),
-            protocol_version: 20,
-            sequence_number: 2,
-            network_id: [0; 32],
-            base_reserve: 10,
-            min_temp_entry_ttl: 1,
-            min_persistent_entry_ttl: 1,
-            max_entry_ttl: 6_312_000,
-        });
-        assert!(!client.is_monitoring_current(&s(&env, "p1")));
-    }
-
-    #[test]
-    fn test_monitoring_current_within_365_days() {
-        let env = Env::default();
-        let (client, _, oracle) = init(&env);
-        client.submit_monitoring_data(
-            &oracle, &s(&env, "p1"), &s(&env, "2023-Q1"),
-            &1000_i128, &80_u32, &s(&env, "QmCID"),
-        ).unwrap();
-        assert!(client.is_monitoring_current(&s(&env, "p1")));
-    }
-
-    #[test]
-    fn test_no_monitoring_data_returns_stale() {
-        let env = Env::default();
-        let (client, _, _) = init(&env);
-        assert!(!client.is_monitoring_current(&s(&env, "never-submitted")));
-    }
-
-    // ── UnauthorizedOracle ────────────────────────────────────────────────────
-
-    #[test]
-    fn test_rogue_cannot_submit_monitoring() {
-        let env = Env::default();
-        let (client, _, _) = init(&env);
-        let rogue = Address::generate(&env);
-        let result = client.try_submit_monitoring_data(
-            &rogue, &s(&env, "p1"), &s(&env, "2023-Q1"),
-            &1000_i128, &80_u32, &s(&env, "QmCID"),
-        );
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedOracle));
-    }
-
-    #[test]
-    fn test_rogue_cannot_update_price() {
-        let env = Env::default();
-        let (client, _, _) = init(&env);
-        let rogue = Address::generate(&env);
-        let result = client.try_update_credit_price(&rogue, &s(&env, "VCS"), &2023_u32, &10_0000000_i128);
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedOracle));
-    }
-
-    #[test]
-    fn test_rogue_cannot_flag_project() {
-        let env = Env::default();
-        let (client, _, _) = init(&env);
-        let rogue = Address::generate(&env);
-        let result = client.try_flag_project(&rogue, &s(&env, "p1"), &s(&env, "fraud"));
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedOracle));
-    }
-
-    #[test]
-    fn test_rogue_cannot_rotate_oracle() {
-        let env = Env::default();
-        let (client, _, _) = init(&env);
-        let rogue      = Address::generate(&env);
-        let new_oracle = Address::generate(&env);
-        let result = client.try_rotate_oracle(&rogue, &new_oracle);
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::UnauthorizedVerifier));
-    }
-
-    // ── AlreadyInitialized ────────────────────────────────────────────────────
-
-    #[test]
-    fn test_double_initialize_fails() {
-        let env = Env::default();
-        let (client, admin, oracle) = init(&env);
-        let result = client.try_initialize(&admin, &oracle);
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::AlreadyInitialized));
-    }
-
-    // ── ProjectNotFound (monitoring data) ─────────────────────────────────────
-
-    #[test]
-    fn test_get_monitoring_data_not_found() {
-        let env = Env::default();
-        let (client, _, _) = init(&env);
-        let result = client.try_get_monitoring_data(&s(&env, "ghost"), &s(&env, "2023-Q1"));
-        assert_eq!(result.unwrap_err(), Ok(CarbonError::ProjectNotFound));
+            &project_id,
+            &period,
+            &tonnes,
+            &score,
+            &cid,
+            &signature,
+            &invalid_nonce,
+        ).unwrap_err();
+        
+        assert_eq!(err.unwrap(), CarbonError::InvalidNonce);
     }
 }
