@@ -46,6 +46,6 @@
     "@testing-library/react": "^16",
     "@testing-library/jest-dom": "^6",
     "storybook": "^7.6.0",
-    "typescript": "^5"
+    "typescript": "^6"
   }
 }
