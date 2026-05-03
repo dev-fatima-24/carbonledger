@@ -35,7 +35,7 @@
     "@storybook/addon-interactions": "^7.6.0",
     "@storybook/addon-links": "^7.6.0",
     "@storybook/nextjs": "^7.6.0",
-    "@storybook/react": "^7.6.0",
+    "@storybook/react": "^10.3.6",
     "@storybook/test": "^7.6.0",
     "@types/node": "^20",
     "@types/react": "^18",
