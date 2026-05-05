@@ -276,6 +276,17 @@ model AdminConfig {
   updatedAt DateTime @updatedAt
 }
 
+model ApiKey {
+  id               String   @id @default(cuid())
+  key              String   @unique
+  organizationName String
+  contactEmail     String
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+
+  @@index([key])
+}
+
 model SorobanSubmission {
   id         String   @id @default(cuid())
   contractId String
