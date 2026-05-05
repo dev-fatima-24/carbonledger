@@ -9,6 +9,8 @@ import { getWalletErrorMessage } from "../../lib/wallet-errors";
 import { colors } from "../../styles/design-system";
 import TransactionStatus, { TxStatus } from "../../components/TransactionStatus";
 import Toast, { useToast } from "../../components/Toast";
+import { useWalletStatus } from "../../hooks/useWalletStatus";
+import WalletPrompt from "../../components/WalletPrompt";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -392,39 +394,29 @@ function Step5({
 
 export default function RetirePage() {
   const searchParams = useSearchParams();
+  const batchId      = searchParams.get("batch") ?? "";
 
-  const [step, setStep] = useState<Step>(1);
-  const [form, setForm] = useState<RetireFormState>({
-    batchId:     searchParams.get("batch") ?? "",
-    amount:      1,
-    beneficiary: "",
-    reason:      "",
-  });
-  const [walletKey, setWalletKey]       = useState<string | null>(null);
-  const [txStatus, setTxStatus]         = useState<TxStatus | null>(null);
-  const [txHash, setTxHash]             = useState<string | null>(null);
+  const [amount, setAmount]         = useState(1);
+  const [beneficiary, setBeneficiary] = useState("");
+  const [reason, setReason]         = useState("");
+  const [txStatus, setTxStatus]     = useState<TxStatus | null>(null);
+  const [txHash, setTxHash]         = useState<string | null>(null);
   const [retirementId, setRetirementId] = useState<string | null>(null);
-  const { toasts, addToast, dismiss }   = useToast();
+  const { toasts, addToast, dismiss } = useToast();
+  const { status: walletStatus, address: walletKey, refresh: refreshWallet } = useWalletStatus();
 
-  function setField(k: keyof RetireFormState, v: string | number) {
-    setForm(prev => ({ ...prev, [k]: v }));
-  }
-
-  async function handleConnect() {
-    try {
-      const key = await connectFreighter();
-      setWalletKey(key);
-    } catch (e) {
-      addToast({ type: "error", title: "Wallet error", message: getWalletErrorMessage(e) });
-    }
+  async function handleConnect(key: string) {
+    addToast({ type: "success", title: "Wallet connected", message: key.slice(0, 8) + "…" });
   }
 
   async function handleRetire() {
-    if (!walletKey) return;
-    setStep(4);
-    setTxStatus("pending");
+    if (!walletKey || !batchId || !beneficiary || !reason) return;
+    setTxStatus("building");
     try {
-      setTxStatus("submitted");
+      await new Promise(r => setTimeout(r, 500));
+      setTxStatus("signing");
+      await new Promise(r => setTimeout(r, 1000));
+      setTxStatus("submitting");
       const result = await retireCredits({
         batchId:          form.batchId,
         amount:           form.amount,
@@ -432,6 +424,8 @@ export default function RetirePage() {
         retirementReason: form.reason,
         holderPublicKey:  walletKey,
       });
+      setTxStatus("polling");
+      await new Promise(r => setTimeout(r, 2000));
       setTxHash(result.txHash);
       setRetirementId(result.retirementId);
       setTxStatus("confirmed");
@@ -449,7 +443,18 @@ export default function RetirePage() {
     }
   }
 
+  const inputStyle: React.CSSProperties = {
+    width: "100%", border: `1px solid ${colors.neutral[300]}`,
+    borderRadius: "0.5rem", padding: "0.75rem 1rem",
+    fontSize: "0.9rem", color: colors.neutral[900],
+    boxSizing: "border-box",
+  };
+
+  const busy = txStatus && !["confirmed", "failed"].includes(txStatus);
+  const isDisabled = !beneficiary || !reason || !!busy || txStatus === "confirmed";
+
   return (
+    <ErrorBoundary>
     <div style={{ maxWidth: "600px", margin: "0 auto", padding: "2.5rem 2rem" }}>
       <h1 style={{ fontSize: "2rem", fontWeight: 800, color: colors.neutral[900], margin: "0 0 0.5rem" }}>
         Retire Carbon Credits
@@ -458,36 +463,107 @@ export default function RetirePage() {
         Retirement is permanent and irreversible. A verifiable certificate will be issued for ESG reporting.
       </p>
 
-      <StepIndicator current={step} />
+      <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+        <div>
+          <label style={{ fontSize: "0.875rem", fontWeight: 600, color: colors.neutral[700], display: "block", marginBottom: "0.4rem" }}>
+            Amount to Retire (tonnes CO₂e) — minimum 0.01 tCO₂e
+          </label>
+          <input
+            type="number" min={0.01} step={0.01} value={amount}
+            onChange={e => {
+              const v = parseFloat(parseFloat(e.target.value).toFixed(2));
+              setAmount(Math.max(0.01, v || 0.01));
+            }}
+            style={inputStyle}
+          />
+        </div>
 
-      {step === 1 && (
-        <Step1 form={form} onChange={setField} onNext={() => setStep(2)} />
-      )}
-      {step === 2 && (
-        <Step2 form={form} onChange={setField} onBack={() => setStep(1)} onNext={() => setStep(3)} />
-      )}
-      {step === 3 && (
-        <Step3
-          form={form}
-          walletKey={walletKey}
-          onConnect={handleConnect}
-          onBack={() => setStep(2)}
-          onNext={handleRetire}
-        />
-      )}
-      {step === 4 && (
-        <Step4 txStatus={txStatus} txHash={txHash} />
-      )}
-      {step === 5 && retirementId && txHash && (
-        <Step5
-          retirementId={retirementId}
-          txHash={txHash}
-          beneficiary={form.beneficiary}
-          amount={form.amount}
-        />
-      )}
+        <div>
+          <label htmlFor="retire-beneficiary" style={{ fontSize: "0.875rem", fontWeight: 600, color: colors.neutral[700], display: "block", marginBottom: "0.4rem" }}>
+            Beneficiary Name (appears on certificate)
+          </label>
+          <input
+            id="retire-beneficiary"
+            type="text"
+            placeholder="e.g. Acme Corporation"
+            value={beneficiary}
+            onChange={e => setBeneficiary(e.target.value)}
+            style={inputStyle}
+          />
+        </div>
+
+        <div>
+          <label htmlFor="retire-reason" style={{ fontSize: "0.875rem", fontWeight: 600, color: colors.neutral[700], display: "block", marginBottom: "0.4rem" }}>
+            Retirement Reason
+          </label>
+          <textarea
+            id="retire-reason"
+            placeholder="e.g. Offsetting 2023 Scope 1 and 2 emissions"
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            rows={3}
+            style={{ ...inputStyle, resize: "vertical" }}
+          />
+        </div>
+
+        {/* Warning */}
+        <div
+          id="retire-warning"
+          role="note"
+          style={{
+            background: "#fef9c3", border: "1px solid #fde047",
+            borderRadius: "0.5rem", padding: "0.875rem 1rem",
+            display: "flex", gap: "0.75rem",
+          }}
+        >
+          <span aria-hidden="true">⚠️</span>
+          <p style={{ fontSize: "0.8rem", color: "#854d0e", margin: 0 }}>
+            Retirement is <strong>permanent and irreversible</strong>. Once retired, these credits cannot be transferred, resold, or retired again.
+          </p>
+        </div>
+
+        {txStatus && <TransactionStatus status={txStatus} txHash={txHash ?? undefined} onRetry={txStatus === "failed" ? handleRetire : undefined} />}
+
+        {retirementId && txStatus === "confirmed" && (
+          <a
+            href={`/retire/${retirementId}`}
+            style={{
+              display: "block", textAlign: "center",
+              background: colors.primary[50], color: colors.primary[700],
+              border: `1px solid ${colors.primary[200]}`,
+              borderRadius: "0.5rem", padding: "0.875rem",
+              fontSize: "0.9rem", fontWeight: 700, textDecoration: "none",
+            }}
+          >
+            View & Download Certificate →
+          </a>
+        )}
+
+        {walletStatus !== "ready" ? (
+          <WalletPrompt status={walletStatus} onConnect={handleConnect} refresh={refreshWallet} />
+        ) : (
+          <button
+            type="button"
+            onClick={handleRetire}
+            disabled={isDisabled}
+            aria-disabled={isDisabled}
+            aria-describedby="retire-warning"
+            style={{
+              background: isDisabled ? colors.neutral[300] : "#dc2626",
+              color: "#fff", border: "none", borderRadius: "0.5rem",
+              padding: "0.875rem", fontSize: "1rem", fontWeight: 700,
+              cursor: isDisabled ? "not-allowed" : "pointer",
+            }}
+          >
+            {txStatus === "confirmed" ? "Retired ✓" :
+             busy ? "Processing…" :
+             `Permanently Retire ${formatTonnes(amount)}`}
+          </button>
+        )}
+      </div>
 
       <Toast toasts={toasts} onDismiss={dismiss} />
     </div>
+    </ErrorBoundary>
   );
 }

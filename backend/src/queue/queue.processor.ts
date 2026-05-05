@@ -3,12 +3,16 @@ import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { QUEUE_NAME, JobType } from './queue.constants';
 import { PrismaService } from '../prisma.service';
+import { CertificateService } from '../retirements/certificate.service';
 
 @Processor(QUEUE_NAME)
 export class QueueProcessor extends WorkerHost {
   private readonly logger = new Logger(QueueProcessor.name);
 
-  constructor(private readonly prisma: PrismaService) {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly certificateService: CertificateService,
+  ) {
     super();
   }
 
@@ -30,9 +34,15 @@ export class QueueProcessor extends WorkerHost {
   }
 
   private async handleCertificateGeneration(data: Record<string, unknown>) {
-    this.logger.log(`Generating certificate for retirement ${data['retirementId']}`);
-    // TODO: integrate with PDF generation service
-    return { retirementId: data['retirementId'], status: 'generated' };
+    const retirementId = data['retirementId'] as string;
+    this.logger.log(`Generating certificate for retirement ${retirementId}`);
+    try {
+      const result = await this.certificateService.generateAndPinCertificate(retirementId);
+      return { retirementId, cid: result.cid, status: 'generated_and_pinned' };
+    } catch (err: any) {
+      this.logger.error(`Failed to generate certificate for ${retirementId}: ${err.message}`);
+      throw err;
+    }
   }
 
   private async handleIpfsPinning(data: Record<string, unknown>) {
