@@ -89,11 +89,11 @@ export default function RetirementCertificate({ retirement, publicUrl }: Props) 
         {/* Details grid */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "1.5rem", marginBottom: "2rem" }}>
           {[
-            { label: "Project", value: retirement.projectId },
+            { label: "Project", value: retirement.project?.name ?? retirement.projectName ?? retirement.projectId },
             { label: "Vintage Year", value: `${retirement.vintageYear}` },
             { label: "Retirement Reason", value: retirement.retirementReason },
             { label: "Retirement Date", value: new Date(retirement.retiredAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) },
-            { label: "Serial Numbers", value: `${retirement.serialNumbers[0]} – ${retirement.serialNumbers[retirement.serialNumbers.length - 1]}` },
+            { label: "Serial Range", value: `${retirement.serialNumbers[0]} – ${retirement.serialNumbers[retirement.serialNumbers.length - 1]}` },
             { label: "Certificate ID", value: retirement.retirementId },
           ].map(({ label, value }) => (
             <div key={label} style={{ borderLeft: `3px solid ${colors.primary[300]}`, paddingLeft: "0.75rem" }}>
